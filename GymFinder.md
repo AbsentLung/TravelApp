@@ -6,15 +6,19 @@ A way to find gyms anywhere in the world, weighted toward the places backpackers
 
 ### 1. Official map/places APIs (Google Places, Foursquare, OpenStreetMap/Overpass)
 
+Three different products, worth distinguishing:
+- **Google Places API** — the default choice, best global density, but billed per-request and that bill scales with how many cities/refreshes we do.
+- **Foursquare Places API** — Foursquare started as the consumer check-in app (Swarm/City Guide today), but the company is now mainly a B2B places-data business (it merged with Factual, another places-data company) selling exactly this kind of API. Dedicated gym/fitness categories, historically a more generous free tier than Google's, but weaker coverage outside the US/Europe — a real downside for Southeast Asia/Latin America hubs specifically.
+- **OpenStreetMap / Overpass API** — free, volunteer-built, `leisure=fitness_centre` tagging. No bill at any scale, and several nomad hubs have surprisingly active local OSM communities, but coverage is inherently uneven since it depends on who's bothered to map a given city.
+
 **Pros**
 - Legally clean — licensed, ToS-compliant, no scraping exposure at all. Given everything we just discussed about Air Canada v. Seats.aero and American v. Skiplagged, this matters more than it might look like on a feature list.
 - Structured data for free: name, address, coordinates, phone, hours, rating, photos. No parsing/normalization work.
-- Google Places specifically has a `gym` place type and genuinely good global density, including in most nomad hubs.
-- OpenStreetMap is free (no per-request cost) and has `leisure=fitness_centre` tagging. Coverage is volunteer-driven, but several nomad hubs in Southeast Asia have surprisingly active OSM communities.
+- Having three real options (one free, two paid with different coverage/pricing tradeoffs) means we're not locked into a single vendor's pricing changes the way a lot of Google-Places-only startups got burned before.
 
 **Cons**
-- Cost: Google Places isn't free at any real scale. Refreshing a worldwide gym dataset periodically adds up fast under per-request billing.
-- Missing exactly the attributes that matter most to this audience: day-pass price, whether drop-ins are even allowed, equipment/specialty (CrossFit vs. commercial chain vs. climbing gym), wifi, long-stay packages. No map API has any of this.
+- Cost: the two paid options aren't free at real scale. Refreshing a worldwide gym dataset periodically adds up under per-request billing, and the free OSM option trades that cost for coverage gaps.
+- Missing exactly the attributes that matter most to this audience: day-pass price, whether drop-ins are even allowed, equipment/specialty (CrossFit vs. commercial chain vs. climbing gym), wifi, long-stay packages. None of the three has any of this.
 - Storage/caching restrictions in some API terms — worth checking current Google Maps Platform ToS before architecting "store everything forever."
 - Single-vendor pricing risk. Google has changed Maps API pricing substantially before, and it broke a lot of startups' unit economics overnight.
 
