@@ -57,3 +57,184 @@ Three different products, worth distinguishing:
 
 - Postgres has **PostGIS**, which is the right tool for "gyms near me" geospatial queries — worth enabling from the first migration rather than bolting on distance math later.
 - Every enriched field (price, hours, drop-in policy) should carry a `last_verified_at` timestamp from day one, so the UI can show "confirmed 2 weeks ago" vs. "nobody's checked this in 8 months" — that distinction is probably more valuable to a traveler than the raw data point itself.
+
+---
+
+## Database schema: three ways to let OSM data and user edits coexist
+
+Decided: OpenStreetMap/Overpass seeds the map, verified user submissions grow it, PostgreSQL + PostGIS underneath. The one real design question left is **how an OSM-sourced row and a later user correction to that same row coexist** — specifically, what happens when we re-sync from OSM and a user has already verified/edited that gym's name, hours, or description. Three ways to handle it, from simplest to most capable.
+
+### Design A — One table, source-tagged per row (simplest)
+
+A single `gyms` table. Each row starts from an OSM import; once *any* user-verified edit lands on a gym, the whole row flips to user-owned and future OSM re-syncs for that gym are skipped entirely (new OSM gyms still import normally; it's only re-syncing an *already-edited* gym that's blocked).
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+CREATE TYPE gym_data_source AS ENUM ('osm', 'user_submitted');
+
+CREATE TABLE gyms (
+  id              BIGSERIAL PRIMARY KEY,
+  osm_id          BIGINT UNIQUE,              -- null if a user added it outright, not from OSM
+  name            TEXT NOT NULL,
+  description     TEXT,                       -- OSM rarely has this; usually empty until a user fills it in
+  location        GEOGRAPHY(POINT, 4326) NOT NULL,
+  address         TEXT,
+  city            TEXT,
+  country         TEXT,
+  phone           TEXT,
+  website         TEXT,
+  day_pass_price_cents INT,
+  day_pass_currency   TEXT,
+  allows_drop_in  BOOLEAN,
+  wifi_available  BOOLEAN,
+  data_source     gym_data_source NOT NULL DEFAULT 'osm',
+  verified_at     TIMESTAMPTZ,                -- last time a human confirmed these details
+  verified_by     BIGINT REFERENCES users(id),
+  avg_rating      NUMERIC(2,1),               -- see "Rating aggregation" below
+  review_count    INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_gyms_location ON gyms USING GIST (location);
+```
+
+**Pros**
+- Easy to build and query — one table, no joins to render the map or the popup.
+- Matches the MVP's actual complexity: with a handful of launch cities, re-sync conflicts will be rare at first.
+
+**Cons**
+- All-or-nothing per gym: if a user fixes just the phone number, the *entire* row stops receiving OSM updates — including things OSM might still track better than we ever will, like the gym closing down.
+- No history. If an edit turns out to be wrong or vandalized, there's no trail back to what it was before.
+
+### Design B — Two-layer: immutable OSM mirror + canonical editable table
+
+`osm_gyms` is a pure, disposable mirror of whatever Overpass returns — fully replaced on every sync, never hand-edited. `gyms` is the real, user-facing table, created once from `osm_gyms` and updated field-by-field: a re-sync only overwrites a field if nothing has verified that *specific* field since.
+
+```sql
+CREATE TABLE osm_gyms (
+  osm_id        BIGINT PRIMARY KEY,
+  name          TEXT,
+  location      GEOGRAPHY(POINT, 4326),
+  raw_tags      JSONB,                        -- the full OSM tag set, for anything not modeled explicitly
+  last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE gyms (
+  id              BIGSERIAL PRIMARY KEY,
+  osm_id          BIGINT UNIQUE REFERENCES osm_gyms(osm_id),
+  name            TEXT NOT NULL,
+  description     TEXT,
+  location        GEOGRAPHY(POINT, 4326) NOT NULL,
+  address         TEXT,
+  day_pass_price_cents INT,
+  day_pass_currency    TEXT,
+  allows_drop_in  BOOLEAN,
+  wifi_available  BOOLEAN,
+  -- which fields a user has verified, so a re-sync knows what NOT to touch
+  locked_fields   TEXT[] NOT NULL DEFAULT '{}',
+  verified_at     TIMESTAMPTZ,
+  verified_by     BIGINT REFERENCES users(id),
+  avg_rating      NUMERIC(2,1),
+  review_count    INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_gyms_location ON gyms USING GIST (location);
+```
+
+**Pros**
+- Field-level, not row-level: a user fixing the phone number doesn't block the name or location from still getting OSM updates.
+- Clean separation of "what the source says" from "what we show" — re-syncing is safe by construction, and `osm_gyms` doubles as a debugging/audit log of raw source data.
+
+**Cons**
+- More moving parts: two tables to keep in sync, and the sync job itself needs real logic (`locked_fields` checks per column) instead of a single upsert.
+- Still no *history* — `locked_fields` says a field is user-owned, but not what it used to be or who changed it when.
+
+### Design C — Event-sourced field history (full audit trail)
+
+Every change — an OSM sync or a user edit — is logged as its own immutable row. The "current" value of any field is just the latest one in the log. This is a genuinely different shape, not a variation on A/B: there's no single `gyms.name` column to `SELECT`, there's a stream of edits to replay (in practice, backed by a view or a trigger-maintained snapshot table for fast reads).
+
+```sql
+CREATE TABLE gyms (                            -- now just identity + location
+  id        BIGSERIAL PRIMARY KEY,
+  osm_id    BIGINT UNIQUE,
+  location  GEOGRAPHY(POINT, 4326) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE gym_field_edits (
+  id          BIGSERIAL PRIMARY KEY,
+  gym_id      BIGINT NOT NULL REFERENCES gyms(id),
+  field_name  TEXT NOT NULL,                   -- 'name', 'description', 'day_pass_price_cents', ...
+  new_value   TEXT,                            -- stored as text; cast on read
+  source      TEXT NOT NULL CHECK (source IN ('osm_sync', 'user_edit')),
+  user_id     BIGINT REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_gym_field_edits_gym_field ON gym_field_edits (gym_id, field_name, created_at DESC);
+
+-- a materialized view (or trigger-maintained table) picks the latest row
+-- per (gym_id, field_name) to produce the "current gym" read model
+```
+
+**Pros**
+- Full history for free: "who changed what, and when" is just a query, not a feature you have to bolt on. Genuinely nice for a travel-community product — "see the edit history" or "this user has 40 accepted edits" is a trust signal competitors like Seats.aero-style aggregators can't easily offer, since they don't own the data pipeline.
+- Naturally supports rollback/dispute resolution — bad edits don't destroy the previous value, they just get superseded (or un-superseded).
+
+**Cons**
+- The most engineering work by far, for a feature (title/rating/description/reviews in a popup) that doesn't need any of this on day one.
+- Reads need a materialized view or snapshot table kept in sync — the same staleness-vs-triggers tradeoff as the rating-aggregation question below, just applied to every field instead of one number.
+
+### Which one, and when
+
+**Design A for v1.** The stated scope — OSM seed, a handful of launch cities, a map popup with title/rating/description/reviews — doesn't have enough edit volume yet to need field-level conflict resolution. Move to **Design B** once OSM re-syncs actually start clobbering real community edits in practice (that's a "when it hurts" migration, not a guess upfront). **Design C** is worth revisiting later as a trust/differentiation feature in its own right, not as a data-integrity necessity — "see who verified this" is a product decision, not just a schema one.
+
+## Smaller decisions that apply no matter which design above you pick
+
+**Rating aggregation — denormalized cache vs. computed live.** `avg_rating`/`review_count` on `gyms` can be a real column kept in sync by a trigger (or application code) on every review insert/update/delete, or just `AVG(rating)`/`COUNT(*)` computed on read. Cache is faster for the map view (which needs a rating per pin, for every gym in the viewport, on every pan) but needs to stay correctly in sync. Computed-live is simpler and always correct but gets slower exactly where it matters most — rendering a map full of pins. **Recommendation: cache it** — the map-view access pattern (many gyms, one query, every pan) is the one offset pagination/grouped-counts lesson from the retail project applies to directly.
+
+**One review per user per gym, or many over time?** A backpacker might pass through the same city months apart and want to leave an updated review. A `UNIQUE (gym_id, user_id)` constraint (Yelp-style, one review that gets edited) is simpler and avoids rating inflation from repeat visitors; dropping the constraint lets reviews reflect "this place changed since I was last here," which might matter more for day-pass pricing/policy than a typical restaurant review would. Worth deciding deliberately rather than defaulting to whichever happens to be easier to write first.
+
+**Review moderation — trust-by-default vs. pending-approval.** Given the audience (a travel community, not an adversarial marketplace), publishing reviews immediately with an after-the-fact "report" flag is probably enough for v1 — a `status` column (`published` / `flagged` / `removed`) on `reviews` covers it without needing a moderation queue blocking every submission.
+
+```sql
+CREATE TABLE reviews (
+  id          BIGSERIAL PRIMARY KEY,
+  gym_id      BIGINT NOT NULL REFERENCES gyms(id) ON DELETE CASCADE,
+  user_id     BIGINT NOT NULL REFERENCES users(id),
+  rating      SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  body        TEXT,
+  status      TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('published', 'flagged', 'removed')),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_reviews_gym_id ON reviews (gym_id) WHERE status = 'published';
+```
+
+## The map-popup query pattern (recommended, not really a fork)
+
+Two genuinely different queries, not one:
+
+1. **Viewport query** — as the map pans/zooms, fetch just `id`, `name`, `location`, `avg_rating` for every gym in the current bounding box. Cheap, called constantly.
+2. **Detail query** — only when a specific pin is clicked, fetch that one gym's full row *plus* a page of its reviews.
+
+The thing to actively avoid: fetching reviews (or anything review-sized) for every gym in the viewport just because the popup *might* need them for whichever one gets clicked. That's the same N+1-shaped mistake as the retail project's original product-count bug, just in a new place — load the heavy stuff once, on click, for the one gym that needs it, not for all of them speculatively.
+
+```sql
+-- 1. Viewport query — PostGIS's && uses the GIST index; cheap, called on every pan/zoom
+SELECT id, name, ST_AsGeoJSON(location) AS location, avg_rating
+FROM gyms
+WHERE location && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326);
+
+-- 2. Detail query — only on click, for exactly one gym
+SELECT * FROM gyms WHERE id = :gym_id;
+SELECT * FROM reviews WHERE gym_id = :gym_id AND status = 'published'
+  ORDER BY created_at DESC LIMIT 20;
+```
+
+One thing that isn't really a fork: use `geography(Point, 4326)`, not `geometry`. This app is global by design — `geography` does distance/containment math correctly on the sphere everywhere, where `geometry` needs a locally-appropriate projected CRS to stay accurate, which doesn't exist for "every nomad hub on Earth" at once.
