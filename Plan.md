@@ -100,6 +100,8 @@ CREATE TABLE gyms (
 CREATE INDEX idx_gyms_location ON gyms USING GIST (location);
 ```
 
+*(Superseded below — once Redis entered the picture, this one table split into `gyms` + `gym_metadata` so there's a clean cache-key boundary between what the viewport needs and what the popup needs. See "Caching gym metadata with Redis" further down for the current shape; the provenance rule above — a row flips to user-owned on its first verified edit — still applies, just to `gym_metadata` now instead of `gyms`.)*
+
 **Pros**
 - Easy to build and query — one table, no joins to render the map or the popup.
 - Matches the MVP's actual complexity: with a handful of launch cities, re-sync conflicts will be rare at first.
@@ -258,8 +260,17 @@ erDiagram
         bigint id PK
         bigint osm_id "unique, nullable - null if user-added outright"
         text name
+        geography location "GEOGRAPHY POINT 4326 - what the viewport query needs"
+        enum data_source "osm or user_submitted"
+        numeric avg_rating "denormalized cache"
+        int review_count "denormalized cache"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    GYM_METADATA {
+        bigint gym_id PK_FK "same value as gyms.id, on purpose"
         text description
-        geography location "GEOGRAPHY POINT 4326"
         text address
         text city
         text country
@@ -269,12 +280,8 @@ erDiagram
         text day_pass_currency
         boolean allows_drop_in
         boolean wifi_available
-        enum data_source "osm or user_submitted"
         timestamptz verified_at
         bigint verified_by FK
-        numeric avg_rating "denormalized cache"
-        int review_count "denormalized cache"
-        timestamptz created_at
         timestamptz updated_at
     }
 
@@ -291,7 +298,8 @@ erDiagram
 
     USERS ||--o{ REVIEWS : writes
     GYMS ||--o{ REVIEWS : has
-    USERS ||--o{ GYMS : verifies
+    USERS ||--o{ GYM_METADATA : verifies
+    GYMS ||--|| GYM_METADATA : "1-to-1, cached in Redis"
 ```
 
 ### Data flow
@@ -322,5 +330,114 @@ flowchart TB
         DetailQuery -->|full gym row| Gyms
         DetailQuery -->|latest published reviews| Reviews
         DetailQuery --> Popup["Popup: title, rating, description, reviews"]
+    end
+```
+
+## Caching gym metadata with Redis, designed for scale now
+
+Decided: Redis goes in now, in front of `gym_metadata`, built so it doesn't need reworking as traffic grows. The design below splits into pieces that each age differently — the schema and cache-key shape are the parts that are expensive to change later and are locked in now; the invalidation *trigger* mechanism is deliberately the one piece built to swap out without touching anything else, since that's the part that actually depends on how much write-path complexity shows up later.
+
+### The split: `gyms` stays lean, `gym_metadata` holds the detail
+
+```sql
+-- gyms: everything the viewport query needs, and nothing it doesn't
+CREATE TABLE gyms (
+  id              BIGSERIAL PRIMARY KEY,
+  osm_id          BIGINT UNIQUE,
+  name            TEXT NOT NULL,
+  location        GEOGRAPHY(POINT, 4326) NOT NULL,
+  data_source     gym_data_source NOT NULL DEFAULT 'osm',
+  avg_rating      NUMERIC(2,1),
+  review_count    INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_gyms_location ON gyms USING GIST (location);
+
+-- gym_metadata: everything the detail popup needs, 1:1 with gyms,
+-- and the exact row shape that gets cached in Redis
+CREATE TABLE gym_metadata (
+  gym_id          BIGINT PRIMARY KEY REFERENCES gyms(id) ON DELETE CASCADE,
+  description     TEXT,
+  address         TEXT,
+  city            TEXT,
+  country         TEXT,
+  phone           TEXT,
+  website         TEXT,
+  day_pass_price_cents INT,
+  day_pass_currency    TEXT,
+  allows_drop_in  BOOLEAN,
+  wifi_available  BOOLEAN,
+  verified_at     TIMESTAMPTZ,
+  verified_by     BIGINT REFERENCES users(id),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+`gym_metadata` having its own primary key (`gym_id`, not a surrogate `id`) is deliberate — it makes "the cache key" and "the row's identity" the same value everywhere, with no translation step.
+
+### Cache design
+
+- **Key:** `gym:{gym_id}:metadata` — a versionable prefix (`v1:gym:...`) is worth reserving now too, so a future schema change can roll out as a new key namespace instead of needing a manual flush.
+- **Value:** the whole `gym_metadata` row, serialized as one JSON blob, not a Redis hash. The popup always wants the full row at once, never a single field — a hash would only pay off if something needed partial-field reads, which nothing here does.
+- **TTL:** every key gets one regardless of invalidation — a few days is plenty. This is defense in depth, not a hedge against the design being wrong: if an invalidation is ever missed (a bug, a dropped notification, a process that crashed mid-write), the cache self-heals within a bounded window instead of serving stale data forever. Every production cache that's ever shipped without a TTL as a backstop has eventually been burned by exactly this.
+
+### Read path: cache-aside
+
+```
+getGymDetail(gymId):
+  cached = redis.GET("gym:{gymId}:metadata")
+  if cached: return deserialize(cached)
+  row = postgres.query("SELECT * FROM gym_metadata WHERE gym_id = $1", gymId)
+  redis.SET("gym:{gymId}:metadata", serialize(row), TTL=3days)
+  return row
+```
+
+### Write path: one repository, invalidate — don't write-through
+
+Every write to `gym_metadata` (a user's edit, an OSM sync touching an unlocked field) goes through one function — `GymMetadataRepository.update(gymId, changes)` — and nothing else is allowed to write that table directly. That function does the Postgres `UPDATE`, and on success, `DEL`s the Redis key rather than pushing a freshly-serialized value into it.
+
+DEL-then-let-the-next-read-repopulate, not write-through, on purpose: if the write path builds its own serialized version of "the new value" independently from how the read path builds it, those two serialization steps drift out of sync over time — one gets updated when a field is added, the other doesn't, and now the cache is wrong in a way that's hard to notice. Deleting and letting `getGymDetail` repopulate means the cached value is *always* produced by the exact same code path, so there's only one place that can be wrong, not two.
+
+The "one repository" rule is what makes this invalidation actually reliable — not a database trigger, application code. That's a real tradeoff worth naming: it's correct as long as every write genuinely goes through that one function. The moment there's a second legitimate write path — a separate admin tool, a future microservice, a raw migration script — this stops being airtight, and that's the one thing in this design that's built to swap out cleanly when it happens: a Postgres trigger (`AFTER UPDATE ON gym_metadata`) calling `pg_notify('gym_metadata_changed', NEW.gym_id)`, consumed by a small worker that issues the same `DEL`, catches every write regardless of which code path made it. Nothing else about this design changes if that gets added later — same key, same TTL, same read path — only *what triggers the DEL* moves from the application layer to the database layer.
+
+Explicitly not building yet: a full change-data-capture pipeline (Debezium-style, feeding a message bus) to multiple downstream consumers. That's the right tool when *several* different systems all need to react to the same database changes — a search index, analytics, cache invalidation, webhooks, all at once. Right now there's exactly one consumer of "did `gym_metadata` change" — this cache — so that's real infrastructure solving a multi-consumer problem this app doesn't have.
+
+### One more real failure mode at scale: cache stampede
+
+If a specific gym suddenly gets a burst of simultaneous clicks — a city goes viral on a travel subreddit, say — and that key isn't cached yet (or just expired), every one of those requests can miss at once and all hit Postgres for the same row simultaneously. The standard fix: the first request to miss acquires a short-lived lock (`SETNX gym:{gymId}:lock`, a few seconds' TTL) before querying Postgres; requests that see the lock already held wait briefly and retry the cache read instead of also querying Postgres. Worth building alongside the rest of this now, since it's the same shape of problem as the TTL safety net — cheap to add up front, genuinely painful to retrofit once it's actually happening in production under real load.
+
+### Updated data flow
+
+```mermaid
+flowchart TB
+    subgraph Seed["OSM seeding - background job"]
+        direction LR
+        OSM["OpenStreetMap"] -->|Overpass query| ImportJob["Import job"]
+        ImportJob -->|upsert by osm_id, skip rows already user_submitted| Gyms[("gyms")]
+        ImportJob -->|via GymMetadataRepository| Meta[("gym_metadata")]
+    end
+
+    subgraph Contribute["A user contributes"]
+        direction LR
+        AddUser["User adds or edits a gym"] --> Repo["GymMetadataRepository.update - the only writer"]
+        Repo -->|UPDATE| Meta
+        Repo -->|then DEL gym:id:metadata| Redis[("Redis")]
+        ReviewUser["User writes a review"] --> Backend2["App backend"]
+        Backend2 --> Reviews[("reviews")]
+        Reviews -->|trigger recomputes avg_rating and review_count| Gyms
+    end
+
+    subgraph MapRead["Map and popup - every request"]
+        direction LR
+        Client["Map client"] -->|viewport query: id, name, location, avg_rating| Gyms
+        Client -->|click a pin| DetailFn["getGymDetail id"]
+        DetailFn -->|1 GET gym:id:metadata| Redis
+        Redis -->|hit, most requests| Popup["Popup: title, rating, description, reviews"]
+        Redis -.->|miss| Meta
+        Meta -.->|2 SET with TTL, then return| Redis
+        DetailFn -->|latest published reviews| Reviews
+        DetailFn --> Popup
     end
 ```
