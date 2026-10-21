@@ -269,7 +269,7 @@ erDiagram
     }
 
     GYM_METADATA {
-        bigint gym_id PK_FK "same value as gyms.id, on purpose"
+        bigint gym_id PK "same value as gyms.id, on purpose - also a FK to gyms"
         text description
         text address
         text city
