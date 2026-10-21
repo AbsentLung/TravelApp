@@ -241,6 +241,8 @@ One thing that isn't really a fork: use `geography(Point, 4326)`, not `geometry`
 
 ## Design A — the v1 schema, drawn out
 
+**Not decided yet, on purpose:** `users` needs real authentication (login + password) before any of this actually ships — `gyms.verified_by` and `reviews.user_id` both assume a real, logged-in person. Deferred deliberately rather than guessed at now; revisit before building the submission/review flow, not before.
+
 ### Table diagram
 
 ```mermaid
