@@ -189,9 +189,9 @@ CREATE INDEX idx_gym_field_edits_gym_field ON gym_field_edits (gym_id, field_nam
 - The most engineering work by far, for a feature (title/rating/description/reviews in a popup) that doesn't need any of this on day one.
 - Reads need a materialized view or snapshot table kept in sync — the same staleness-vs-triggers tradeoff as the rating-aggregation question below, just applied to every field instead of one number.
 
-### Which one, and when
+### Decided: Design A for v1
 
-**Design A for v1.** The stated scope — OSM seed, a handful of launch cities, a map popup with title/rating/description/reviews — doesn't have enough edit volume yet to need field-level conflict resolution. Move to **Design B** once OSM re-syncs actually start clobbering real community edits in practice (that's a "when it hurts" migration, not a guess upfront). **Design C** is worth revisiting later as a trust/differentiation feature in its own right, not as a data-integrity necessity — "see who verified this" is a product decision, not just a schema one.
+The stated scope — OSM seed, a handful of launch cities, a map popup with title/rating/description/reviews — doesn't have enough edit volume yet to need field-level conflict resolution. Move to **Design B** once OSM re-syncs actually start clobbering real community edits in practice (that's a "when it hurts" migration, not a guess upfront). **Design C** is worth revisiting later as a trust/differentiation feature in its own right, not as a data-integrity necessity — "see who verified this" is a product decision, not just a schema one.
 
 ## Smaller decisions that apply no matter which design above you pick
 
@@ -238,3 +238,87 @@ SELECT * FROM reviews WHERE gym_id = :gym_id AND status = 'published'
 ```
 
 One thing that isn't really a fork: use `geography(Point, 4326)`, not `geometry`. This app is global by design — `geography` does distance/containment math correctly on the sphere everywhere, where `geometry` needs a locally-appropriate projected CRS to stay accurate, which doesn't exist for "every nomad hub on Earth" at once.
+
+## Design A — the v1 schema, drawn out
+
+### Table diagram
+
+```mermaid
+erDiagram
+    USERS {
+        bigint id PK
+        text email
+        text display_name
+        timestamptz created_at
+    }
+
+    GYMS {
+        bigint id PK
+        bigint osm_id "unique, nullable - null if user-added outright"
+        text name
+        text description
+        geography location "GEOGRAPHY POINT 4326"
+        text address
+        text city
+        text country
+        text phone
+        text website
+        int day_pass_price_cents
+        text day_pass_currency
+        boolean allows_drop_in
+        boolean wifi_available
+        enum data_source "osm or user_submitted"
+        timestamptz verified_at
+        bigint verified_by FK
+        numeric avg_rating "denormalized cache"
+        int review_count "denormalized cache"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    REVIEWS {
+        bigint id PK
+        bigint gym_id FK
+        bigint user_id FK
+        smallint rating "1 to 5"
+        text body
+        text status "published, flagged, or removed"
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    USERS ||--o{ REVIEWS : writes
+    GYMS ||--o{ REVIEWS : has
+    USERS ||--o{ GYMS : verifies
+```
+
+### Data flow
+
+Three separate flows through the same two tables: OSM seeding (background, periodic), a user contributing (adds a gym, edits one, or leaves a review), and the map itself reading on every request.
+
+```mermaid
+flowchart TB
+    subgraph Seed["OSM seeding - background job"]
+        direction LR
+        OSM["OpenStreetMap"] -->|Overpass query| ImportJob["Import job"]
+        ImportJob -->|upsert by osm_id, skip rows already user_submitted| Gyms[("gyms")]
+    end
+
+    subgraph Contribute["A user contributes"]
+        direction LR
+        AddUser["User adds or edits a gym"] --> Backend1["App backend"]
+        Backend1 -->|"data_source = user_submitted, verified_at = now"| Gyms
+        ReviewUser["User writes a review"] --> Backend2["App backend"]
+        Backend2 --> Reviews[("reviews")]
+        Reviews -->|trigger recomputes avg_rating and review_count| Gyms
+    end
+
+    subgraph MapRead["Map and popup - every request"]
+        direction LR
+        Client["Map client"] -->|viewport query: id, name, location, avg_rating| Gyms
+        Client -->|click a pin| DetailQuery["Detail query"]
+        DetailQuery -->|full gym row| Gyms
+        DetailQuery -->|latest published reviews| Reviews
+        DetailQuery --> Popup["Popup: title, rating, description, reviews"]
+    end
+```
