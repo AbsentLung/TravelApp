@@ -218,6 +218,8 @@ CREATE TABLE reviews (
 CREATE INDEX idx_reviews_gym_id ON reviews (gym_id) WHERE status = 'published';
 ```
 
+**Not decided yet, on purpose:** review edit history (archiving a review's previous versions instead of silently overwriting them) and a lightweight user-activity log were discussed and deliberately deferred — not needed for v1, revisit later if moderation/trust turns out to need them. Gyms and `gym_metadata` were explicitly decided to stay historyless, full stop, not deferred — that's Design A as already built, not an open question.
+
 ## The map-popup query pattern (recommended, not really a fork)
 
 Two genuinely different queries, not one:
