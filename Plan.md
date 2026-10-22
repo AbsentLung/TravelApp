@@ -53,6 +53,8 @@ Three different products, worth distinguishing:
 3. **Later — let gyms claim their own listing.** Once there's real traffic, a "claim this gym" flow (gym owner self-reports pricing/hours, similar to Google Business Profile) solves the verification problem *and* gives gym owners a reason to want to be listed — visibility to a traveling customer base they don't otherwise reach. Possible monetization angle down the line (featured placement), but that's a later conversation.
 4. **Start narrow.** Launch with 5-8 known nomad-dense cities rather than "the whole world" — makes the cold-start problem tractable and lets the data model get validated before scaling out.
 
+**Decided: v1 is Bali only.** Resolves the open "how does the sync job know which cities to cover" question from earlier — there's exactly one bounding box to configure, and the 15-minute Overpass polling cadence has enormous headroom against the fair-use budget at a single city. Expanding to a second city is a config change (one more bounding box in whatever `launch_cities` list the import job reads), not a schema change — nothing in the design above assumed one city specifically.
+
 ## A couple of technical notes for later
 
 - Postgres has **PostGIS**, which is the right tool for "gyms near me" geospatial queries — worth enabling from the first migration rather than bolting on distance math later.
