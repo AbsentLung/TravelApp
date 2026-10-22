@@ -377,6 +377,10 @@ CREATE TABLE gym_metadata (
 
 `gym_metadata` having its own primary key (`gym_id`, not a surrogate `id`) is deliberate — it makes "the cache key" and "the row's identity" the same value everywhere, with no translation step.
 
+**Why `avg_rating`/`review_count` live on `gyms`, not `gym_metadata`, even though they're review-derived "detail":** reviews are written through a completely different path than `gym_metadata` (the `reviews` table, not `GymMetadataRepository`). If these two columns lived on `gym_metadata` instead, submitting a review would *also* need to invalidate that gym's Redis cache — a second write path touching the one table the whole invalidation design assumes has exactly one writer. Keeping them on `gyms`, which has no cache in front of it, means a new review never has to think about Redis at all. Secondary reason: they're always updated together by the same trigger, so splitting them across two tables would be an arbitrary separation with no benefit.
+
+**Confirmed: no "OSM review" to keep separate from a user review, because OSM has none.** OpenStreetMap has no rating/review concept at all — Overpass gives us location and tags, nothing review-shaped. `avg_rating`/`review_count` are already 100% derived from our own `reviews` table, with nothing from OSM mixed in.
+
 ### Cache design
 
 - **Key:** `gym:{gym_id}:metadata` — a versionable prefix (`v1:gym:...`) is worth reserving now too, so a future schema change can roll out as a new key namespace instead of needing a manual flush.
@@ -441,3 +445,13 @@ flowchart TB
         DetailFn --> Popup
     end
 ```
+
+## Keeping the OSM seed fresh: no webhook exists, so it's a scheduled job
+
+**OSM has no push mechanism — checked directly, not assumed.** There's no webhook registration, no way for OpenStreetMap to call out to our server when a gym gets edited. Everything it offers is pull-based: Overpass (what we're using), the raw minutely-diff replication feed, or third-party RSS-style watch services. Overpass itself already stays within a few minutes of the live OSM database on its own end, so we don't need to consume the raw diff feed ourselves — we just need to *ask* on a schedule.
+
+**Decided: poll Overpass every 15 minutes, per launch city.** Overpass's fair-use policy treats automated/regular use more strictly than one-off queries (roughly 100 queries/day, under 10MB/day, enforced by an active rate-limiter) — a 15-minute interval across a handful of scoped city queries stays comfortably inside that budget, and it's already more than fresh enough for data that doesn't change minute-to-minute in reality (a gym's address or hours aren't moving targets).
+
+**Decided: BullMQ's repeatable jobs, on the Redis we already have, not a plain in-process cron library.** A simple `node-cron`-style scheduler running inside the API server has a real gotcha once there's more than one instance of that server running (for redundancy, under real traffic): every instance fires the job independently on the same schedule, racing each other into duplicate imports. BullMQ's repeatable jobs use Redis for coordination, so only one worker actually executes each scheduled run no matter how many instances are up — the same "design once, don't rework" reasoning as the caching layer above, and it reuses infrastructure already being stood up rather than introducing a new decision.
+
+**Left open on purpose:** BullMQ assumes at least one long-running Node process to host the worker. That's a non-issue if the backend is a persistent API server (there's already a process to put it in); it's a real question if the backend ends up fully serverless (Lambda-style), where AWS EventBridge Scheduler triggering a Lambda directly would be the more idiomatic fit instead. Revisit this specific choice once the backend's own architecture (persistent server vs. serverless) is actually decided — not before.
