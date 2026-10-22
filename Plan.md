@@ -233,10 +233,15 @@ The thing to actively avoid: fetching reviews (or anything review-sized) for eve
 -- 1. Viewport query — PostGIS's && uses the GIST index; cheap, called on every pan/zoom
 SELECT id, name, ST_AsGeoJSON(location) AS location, avg_rating
 FROM gyms
-WHERE location && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326);
+WHERE deleted_at IS NULL
+  AND location && ST_MakeEnvelope(:min_lng, :min_lat, :max_lng, :max_lat, 4326);
 
 -- 2. Detail query — only on click, for exactly one gym
-SELECT * FROM gyms WHERE id = :gym_id;
+-- (superseded below once Redis entered the picture - gym_metadata and
+-- gym_hours are fetched through the cache-aside getGymDetail path, not
+-- queried directly like this; reviews still are, since they aren't cached)
+SELECT * FROM gym_metadata WHERE gym_id = :gym_id;
+SELECT * FROM gym_hours WHERE gym_id = :gym_id ORDER BY day_of_week, open_time;
 SELECT * FROM reviews WHERE gym_id = :gym_id AND status = 'published'
   ORDER BY created_at DESC LIMIT 20;
 ```
@@ -266,6 +271,8 @@ erDiagram
         enum data_source "osm or user_submitted"
         numeric avg_rating "denormalized cache"
         int review_count "denormalized cache"
+        timestamptz osm_not_found_since "set by sync job, cleared if it reappears"
+        timestamptz deleted_at "set only by a verified human confirmation"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -282,9 +289,18 @@ erDiagram
         text day_pass_currency
         boolean allows_drop_in
         boolean wifi_available
+        text raw_opening_hours "OSM's original string, for future holiday support"
         timestamptz verified_at
         bigint verified_by FK
         timestamptz updated_at
+    }
+
+    GYM_HOURS {
+        bigint id PK
+        bigint gym_id FK
+        smallint day_of_week "0 to 6, matches Postgres EXTRACT DOW"
+        time open_time
+        time close_time
     }
 
     REVIEWS {
@@ -302,6 +318,7 @@ erDiagram
     GYMS ||--o{ REVIEWS : has
     USERS ||--o{ GYM_METADATA : verifies
     GYMS ||--|| GYM_METADATA : "1-to-1, cached in Redis"
+    GYMS ||--o{ GYM_HOURS : "0 or more windows per day"
 ```
 
 ### Data flow
@@ -314,12 +331,14 @@ flowchart TB
         direction LR
         OSM["OpenStreetMap"] -->|Overpass query| ImportJob["Import job"]
         ImportJob -->|upsert by osm_id, skip rows already user_submitted| Gyms[("gyms")]
+        ImportJob -.->|not seen this sync: set osm_not_found_since. seen again: clear it| Gyms
     end
 
     subgraph Contribute["A user contributes"]
         direction LR
-        AddUser["User adds or edits a gym"] --> Backend1["App backend"]
-        Backend1 -->|"data_source = user_submitted, verified_at = now"| Gyms
+        AddUser["User adds or edits a gym"] --> Submissions[("gym_submissions, pending")]
+        Submissions -->|admin approves| Backend1["App backend"]
+        Backend1 -->|"data_source = user_submitted, verified_at = now, verified_by = admin"| Gyms
         ReviewUser["User writes a review"] --> Backend2["App backend"]
         Backend2 --> Reviews[("reviews")]
         Reviews -->|trigger recomputes avg_rating and review_count| Gyms
@@ -351,11 +370,15 @@ CREATE TABLE gyms (
   data_source     gym_data_source NOT NULL DEFAULT 'osm',
   avg_rating      NUMERIC(2,1),
   review_count    INT NOT NULL DEFAULT 0,
+  osm_not_found_since TIMESTAMPTZ, -- set by the sync job the first time this osm_id stops appearing; cleared if it reappears
+  deleted_at      TIMESTAMPTZ,     -- set only once a human verifies the gym is actually gone - never set automatically
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_gyms_location ON gyms USING GIST (location);
+-- Partial, same reasoning as reviews' partial index below: almost every
+-- query only cares about gyms that are actually still there.
+CREATE INDEX idx_gyms_location ON gyms USING GIST (location) WHERE deleted_at IS NULL;
 
 -- gym_metadata: everything the detail popup needs, 1:1 with gyms,
 -- and the exact row shape that gets cached in Redis
@@ -371,11 +394,32 @@ CREATE TABLE gym_metadata (
   day_pass_currency    TEXT,
   allows_drop_in  BOOLEAN,
   wifi_available  BOOLEAN,
+  raw_opening_hours TEXT,                  -- OSM's original opening_hours string, kept for future holiday support - see below
   verified_at     TIMESTAMPTZ,
   verified_by     BIGINT REFERENCES users(id),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- gym_hours: structured, queryable hours - one row per open/close window.
+-- No row for a day_of_week means closed that day. A day can have more than
+-- one row (split hours, e.g. 06:00-10:00 and 16:00-21:00), and that's
+-- handled for free just by not constraining to one row per day.
+CREATE TABLE gym_hours (
+  id          BIGSERIAL PRIMARY KEY,
+  gym_id      BIGINT NOT NULL REFERENCES gyms(id) ON DELETE CASCADE,
+  day_of_week SMALLINT NOT NULL CHECK (day_of_week BETWEEN 0 AND 6), -- matches Postgres EXTRACT(DOW): 0 = Sunday
+  open_time   TIME NOT NULL,
+  close_time  TIME NOT NULL
+);
+
+CREATE INDEX idx_gym_hours_gym_id ON gym_hours (gym_id);
 ```
+
+**A gym open past midnight doesn't need special-case logic — it needs two rows.** `close_time < open_time` on a single row would be ambiguous (does `22:00-02:00` mean "open 4 hours" or "closed 20 hours"?). Storing it as two rows instead — Monday `22:00-23:59:59`, Tuesday `00:00-02:00` — means "is this open right now" is always a simple `open_time <= now AND close_time >= now` check, with no wraparound logic needed anywhere in the query layer.
+
+**`raw_opening_hours` exists specifically because holidays are being deferred, not built around.** OSM's own `opening_hours` tag syntax can express holiday exceptions (`PH off`, specific date overrides) that `gym_hours`' day-of-week model deliberately doesn't capture yet. Rather than lose that information when parsing OSM's string down to structured rows, the original string gets kept too — so adding holiday support later means re-parsing data already in the database, not re-fetching from OSM (which may have since changed, or that gym may since have gone fully user-owned and stopped syncing from OSM at all).
+
+**Same provenance rule as the rest of `gym_metadata` — no special case.** Editing hours through the app flips the gym to user-owned exactly like editing any other field does; `gym_hours` rows get replaced as a set on that edit, same as updating any other `gym_metadata` column. The import job is the one place with real new work: translating OSM's `opening_hours` mini-language into `gym_hours` rows is a genuine parser to write, not a trivial mapping — worth sizing as its own task when the import job actually gets built, not assumed free.
 
 `gym_metadata` having its own primary key (`gym_id`, not a surrogate `id`) is deliberate — it makes "the cache key" and "the row's identity" the same value everywhere, with no translation step.
 
@@ -386,7 +430,7 @@ CREATE TABLE gym_metadata (
 ### Cache design
 
 - **Key:** `gym:{gym_id}:metadata` — a versionable prefix (`v1:gym:...`) is worth reserving now too, so a future schema change can roll out as a new key namespace instead of needing a manual flush.
-- **Value:** the whole `gym_metadata` row, serialized as one JSON blob, not a Redis hash. The popup always wants the full row at once, never a single field — a hash would only pay off if something needed partial-field reads, which nothing here does.
+- **Value:** the whole `gym_metadata` row *plus* its `gym_hours` rows, serialized as one JSON blob, not a Redis hash. The popup always wants all of it at once, never a single field — a hash would only pay off if something needed partial-field reads, which nothing here does. `gym_hours` isn't its own cache entry; it rides along inside the same blob since it's always fetched and invalidated together with the rest of a gym's detail.
 - **TTL:** every key gets one regardless of invalidation — a few days is plenty. This is defense in depth, not a hedge against the design being wrong: if an invalidation is ever missed (a bug, a dropped notification, a process that crashed mid-write), the cache self-heals within a bounded window instead of serving stale data forever. Every production cache that's ever shipped without a TTL as a backstop has eventually been burned by exactly this.
 
 ### Read path: cache-aside
@@ -423,12 +467,14 @@ flowchart TB
         OSM["OpenStreetMap"] -->|Overpass query| ImportJob["Import job"]
         ImportJob -->|upsert by osm_id, skip rows already user_submitted| Gyms[("gyms")]
         ImportJob -->|via GymMetadataRepository| Meta[("gym_metadata")]
+        ImportJob -.->|not seen this sync: set osm_not_found_since. seen again: clear it| Gyms
     end
 
     subgraph Contribute["A user contributes"]
         direction LR
-        AddUser["User adds or edits a gym"] --> Repo["GymMetadataRepository.update - the only writer"]
-        Repo -->|UPDATE| Meta
+        AddUser["User adds or edits a gym"] --> Submissions[("gym_submissions, pending")]
+        Submissions -->|admin approves| Repo["GymMetadataRepository.update - the only writer"]
+        Repo -->|"UPDATE, verified_by = admin"| Meta
         Repo -->|then DEL gym:id:metadata| Redis[("Redis")]
         ReviewUser["User writes a review"] --> Backend2["App backend"]
         Backend2 --> Reviews[("reviews")]
@@ -457,3 +503,41 @@ flowchart TB
 **Decided: BullMQ's repeatable jobs, on the Redis we already have, not a plain in-process cron library.** A simple `node-cron`-style scheduler running inside the API server has a real gotcha once there's more than one instance of that server running (for redundancy, under real traffic): every instance fires the job independently on the same schedule, racing each other into duplicate imports. BullMQ's repeatable jobs use Redis for coordination, so only one worker actually executes each scheduled run no matter how many instances are up — the same "design once, don't rework" reasoning as the caching layer above, and it reuses infrastructure already being stood up rather than introducing a new decision.
 
 **Left open on purpose:** BullMQ assumes at least one long-running Node process to host the worker. That's a non-issue if the backend is a persistent API server (there's already a process to put it in); it's a real question if the backend ends up fully serverless (Lambda-style), where AWS EventBridge Scheduler triggering a Lambda directly would be the more idiomatic fit instead. Revisit this specific choice once the backend's own architecture (persistent server vs. serverless) is actually decided — not before.
+
+## A gym disappearing from OSM isn't the same as it closing down
+
+**Decided: a missing gym gets flagged, not deleted.** A gym falling out of an Overpass query result could mean it closed — or it could mean a mapper temporarily removed a tag, an Overpass instance had a hiccup, or the node got re-tagged mid-edit. Treating "not found this sync" as "delete it" risks destroying a gym with real reviews over something transient. Instead:
+
+- **`osm_not_found_since`** gets set by the sync job the *first* time a previously-seen `osm_id` stops appearing (only if it was previously `NULL`, so it always holds the original missing date, not the most recent check) — and gets cleared back to `NULL` automatically if the gym reappears in a later sync. This is purely a signal, not a judgment.
+- The UI shows a soft warning when it's set — something like "data may not be accurate" — without hiding the gym or blocking the popup. Travelers can still see it, with the caveat visible.
+- **`deleted_at`** is the real, user-facing removal — set only once a human (see "who verifies this," below) confirms the gym is actually gone. The sync job never sets this on its own, no matter how long `osm_not_found_since` has been sitting there.
+
+## Filling gaps OSM doesn't have — and who gets to make that live
+
+**Decided: whatever OSM doesn't give us stays empty until a user fills it in.** This was already true by construction for most of `gym_metadata` (OSM rarely tags `description`, day-pass pricing, wifi), and now applies explicitly to `gym_hours` too — if a gym has no `opening_hours` tag in OSM, it simply gets no `gym_hours` rows, not a guess. Nothing gets fabricated to fill a gap.
+
+**Decided: every user-submitted gym or edit needs admin verification before it goes live — reviews are the one exception.** Reviews stay trust-by-default (published immediately, flagged after the fact if needed) because they're opinions, not facts about a place. A new gym, or an edit to an existing one's name/location/hours/pricing, is a factual claim other travelers will actually navigate off of — wrong information there is a worse failure mode than a bad review. This changes the write path from what was drafted earlier: a submission no longer flips `gyms`/`gym_metadata` directly. It lands in a queue first.
+
+```sql
+CREATE TABLE gym_submissions (
+  id              BIGSERIAL PRIMARY KEY,
+  gym_id          BIGINT REFERENCES gyms(id),  -- null if this is a brand-new gym, not an edit to an existing one
+  submitted_by    BIGINT NOT NULL REFERENCES users(id),
+  submission_type TEXT NOT NULL CHECK (submission_type IN ('new_gym', 'edit')),
+  payload         JSONB NOT NULL,              -- proposed gym/gym_metadata/gym_hours fields
+  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  reviewed_by     BIGINT REFERENCES users(id),
+  reviewed_at     TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_gym_submissions_pending ON gym_submissions (created_at) WHERE status = 'pending';
+```
+
+A submission sits here, untouched by the live tables, until an admin approves it — at which point *that approval* is what calls `GymMetadataRepository.update()` (or the equivalent new-gym insert), and `verified_by`/`verified_at` record the reviewing admin, not the original submitter. This is a more meaningful use of `verified_at`/`verified_by` than the earlier draft had — "verified" now means an independent second person actually confirmed it, not that the submitter confirmed their own submission.
+
+**Noted, not designed yet: "admin" doesn't have to mean a human forever.** `reviewed_by` just references `users(id)` — an automated/AI reviewer fits that same column without any schema change, it'd just be another row in `users` acting as the reviewer. Worth revisiting once there's enough submission volume to make manual review a bottleneck; not a V1 concern.
+
+## What the client shows while something's genuinely slow
+
+The cache-stampede lock above (`SETNX gym:{gymId}:lock`) means a request can occasionally have to wait briefly behind another one filling the cache — worth deciding what the *client* actually displays during that wait, rather than leaving it undefined. **Decided: a lightweight waiting-room state that polls every ~2 seconds, gives up after ~30 seconds, and routes to a failure state** — not an indefinite spinner. Concretely: if the backend responds "still populating, try again shortly" (rather than blocking the HTTP request itself until the lock clears), the client shows a brief "loading this gym's details" state, retries on that interval, and after roughly 15 attempts gives up and shows a real error instead of hanging forever. The same pattern is worth reusing anywhere else a request might legitimately need a moment rather than failing outright — not just this one cache-miss case.
