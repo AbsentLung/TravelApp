@@ -1,5 +1,5 @@
 # I am currently working on a Gym Finder app.
-For reference: https://github.com/AbsentLung/TravelApp/tree/gym-finder
+For reference: https://github.com/AbsentLung/TravelApp/tree/GymFinder
 Demo: https://photos.app.goo.gl/GRBmorkgwwYUKwzo6
 
 This app is intended for broke backpackers to find gym trial hacks, and the cheapest nearby walk-ins.
