@@ -1,3 +1,11 @@
+# I am currently working on a Gym Finder app.
+For reference: https://github.com/AbsentLung/TravelApp/tree/gym-finder
+Demo: https://photos.app.goo.gl/GRBmorkgwwYUKwzo6
+
+This app is intended for broke backpackers to find gym trial hacks, and the cheapest nearby walk-ins.
+At its core, it finds all nearby gyms with Open Street Maps. When you click on a gym, you can then ask a bot for details about costs, free trials, etc. and that data is then stored into a database.
+
+
 # Welcome to your Expo app 👋
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
