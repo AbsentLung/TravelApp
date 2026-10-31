@@ -589,11 +589,11 @@ flowchart LR
     QS --> WS[Sweep workers<br/>same rate limits]
     WS --> SRC[Source plugins<br/>Overpass first, then Google Maps scraper]
     SRC --> N[Normalize + dedupe]
-    N --> D{Seed job?}
-    D -->|yes| BR[Bot review only<br/>admin spot-checks a sample]
-    D -->|no, user sweep| SUB[(Submissions<br/>normal approval flow)]
-    BR --> PG[(Gyms)]
-    SUB --> PG
+    N --> SUB[(Submissions<br/>same approval flow as users)]
+    SUB --> BV{Bot can verify?}
+    BV -->|yes| PG[(Gyms, live)]
+    BV -->|no| AD[Admin review queue]
+    AD --> PG
 ```
 
 - ✅ No new pipeline to build or maintain: seeding is "lots of sweeps", so it tests the real sweep path before launch.
@@ -601,16 +601,27 @@ flowchart LR
 - ✅ Low priority means user sweeps after launch still jump ahead if seeding is still running.
 - ✅ Same rate limits protect us from getting blocked mid-seed.
 - ❌ Slow by design. Seeding many cities at a careful scrape rate takes days, so it should start well before release.
-- ❌ Thousands of seeded gyms can't each go through admin approval (FR-17). The diagram assumes seeded results get bot review only, with admins checking a sample. **This needs Joey's OK.**
+- ✅ Thousands of seeded gyms don't swamp admins: anything the bot can verify goes live without admin approval (see the verification rules below). Only the unverifiable ones reach the admin queue.
+- ❌ The admin queue after a big seeding run could still be long if many gyms can't be verified; admins can work through it after launch since the verified gyms are already live.
 
-**Submissions and approval (FR-12, 16, 17, 18).** User submissions, sweep results and chatbot-found facts all enter the same pipeline.
+**Submissions and approval (FR-12, 16, 17, 18).** User submissions, sweep results, seed results and chatbot-found facts all enter the same pipeline.
+
+**Decided by Joey (2026-10-31): a change skips admin approval when the bot can verify it.** Anything it can't verify goes to an admin as before.
+
+| Change | Counts as bot-verified when |
+|---|---|
+| **Price change** (drop-in, trial, membership) | The price is found on **the gym's own website**, or the bot finds a **price menu less than a year old** (e.g. a dated photo or listing). |
+| New gym / other details | The bot can confirm it from a source (rules to be detailed in the API/schema docs). |
+
+Every auto-approved change keeps its **evidence** (source URL, date found, what was matched) on the record, so admins can audit it later and undo a bad one.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: user submits / sweep finds / chat proposes fact
     Pending --> BotReviewed: worker runs bot review<br/>(spam, duplicate, missing fields)
     BotReviewed --> Rejected: bot rejects obvious junk
-    BotReviewed --> AwaitingAdmin: looks plausible
+    BotReviewed --> Approved: bot verified<br/>(e.g. price on gym's site,<br/>or menu < 1 year old)
+    BotReviewed --> AwaitingAdmin: plausible but not verified
     AwaitingAdmin --> Approved: admin approves
     AwaitingAdmin --> Rejected: admin rejects
     Approved --> [*]: change goes live,<br/>tile cache invalidated
@@ -640,7 +651,6 @@ Settled in PR review:
 - **Database:** PostgreSQL + PostGIS (section 5.1).
 - **Failed bot jobs:** may fail or be lost; every request is tracked in Postgres with a deadline, and the user is told in-app: signed-in users see pending / completed / failed on one "My requests" page alongside their gym add/update requests; signed-out users see it only in-session (section 5.3).
 
-Still needed from Joey:
-1. **Seeded gyms and approval:** can pre-release seed results skip per-gym admin approval (bot review + admin spot checks), or must every one go through FR-17?
+- **Bot verification skips admin approval** (for seeds, sweeps and user requests alike). Price changes count as verified when found on the gym's own website or on a price menu less than a year old; unverified changes go to admin review. Evidence is kept for audit.
 
-Once this is settled, the next docs are stack choices, then schema, then API.
+Nothing open. Next docs: stack choices, then schema, then API.
