@@ -12,11 +12,11 @@ Each phase finishes before the next one starts, unless noted. Check items off as
 
 ## 1. Requirements
 
-- [ ] List functional requirements
-- [ ] List non-functional requirements (performance, scale to thousands of users, cost, privacy, offline behavior)
-- [ ] List the riskiest unknowns (e.g. limits of whichever map/gym data source we pick, cost and hosting of the chatbot's LLM, moderating user-submitted gym data)
-- [ ] Ask Claude to research whether the requirements and unknowns are realistic
-- [ ] Decide what's in scope for beta / demos and what's saved for later
+- [x] List functional requirements
+- [x] List non-functional requirements (performance, scale to thousands of users, cost, privacy, offline behavior)
+- [x] List the riskiest unknowns (e.g. limits of whichever map/gym data source we pick, cost and hosting of the chatbot's LLM, moderating user-submitted gym data)
+- [x] Ask Claude to research whether the requirements and unknowns are realistic
+- [x] Decide what's in scope for beta / demos and what's saved for later
 
 ## 2. Design
 
