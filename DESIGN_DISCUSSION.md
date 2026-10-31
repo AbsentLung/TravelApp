@@ -171,7 +171,7 @@ flowchart TB
 | Reuses demo code | Most | Most | Little | Little |
 | Map stays fast under chat/sweep load | No | Yes | Yes | Yes |
 | Scales past 10k DAU without rewrite (NFR-4) | Weak | Good | Best | Good, within vendor limits |
-| Hosting cost at start | ~Free | ~Free | Highest | ~Free |
+| Hosting cost at start | ~Free | ~Free (same single server as A in demo mode, section 6.1) | Highest | ~Free |
 | Ops complexity | Lowest | Medium | Highest | Low |
 | Lock-in | None | None | Low | High |
 
@@ -406,6 +406,8 @@ Option B keeps the simplicity of one codebase but separates the two kinds of wor
 ### 6.1 Two modes: demo and scale
 
 We want to run cheaply now (no paid queues, Ollama), but be able to switch to high-scale mode straight away once there are users and premium accounts. That works if **every piece that differs between modes sits behind an interface, and the mode is picked by config**, not by code changes. Option B fits this well because "API + workers + queue" can all run inside one process in demo mode.
+
+**Demo-mode B costs the same as Option A.** Everything runs on the same single small server A would use: the API and the worker as two processes (or one), the queue as a table in the same Postgres, and Ollama alongside. No Redis, no paid queue, no extra machine. The only difference from A is that slow jobs go through the queue table instead of running inside the request, so a busy chat or sweep can't slow the map down. That separation is what makes the later switch to scale mode a config change instead of a rewrite.
 
 ```mermaid
 flowchart TB
