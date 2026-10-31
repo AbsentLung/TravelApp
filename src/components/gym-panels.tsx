@@ -74,6 +74,17 @@ export function prefetchAreaCell(lat: number, lng: number, prefetchedCells: Set<
     .finally(() => onLoadingChange(-1));
 }
 
+// Live map-search filter, shared so both platforms match on the exact
+// same fields - name, description, address, and categories, not just
+// name, per explicit request. Plain case-insensitive substring, not a
+// fuzzy/ranked search: this filters which markers are even on screen,
+// so "obviously matches or doesn't" beats a relevance score here.
+export function gymMatchesSearch(gym: Gym, normalizedQuery: string): boolean {
+  if (!normalizedQuery) return true;
+  const haystack = [gym.name, gym.description, gym.address, ...gym.categories].filter(Boolean).join(' ').toLowerCase();
+  return haystack.includes(normalizedQuery);
+}
+
 // Mirrors GYM_CATEGORIES in server/lib.js exactly - a fixed, generic
 // list rather than whatever free-text phrase a scrape happened to
 // produce, per explicit request. A gym can have several at once

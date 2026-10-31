@@ -443,17 +443,51 @@ async function mergeGymsIntoDb(gyms) {
         [g.osmId, g.name, g.lat, g.lng, legacyMatch[0].id, g.address, g.description]
       )
       await addGymCategories(legacyMatch[0].id, g.categories)
-    } else {
-      const { rows: gymRows } = await pool.query(
-        `INSERT INTO gyms (osm_id, name, lat, lng, data_source, address, description)
-         VALUES ($1, $2, $3, $4, 'osm', $5, $6)
-         ON CONFLICT (osm_id) DO UPDATE SET name = EXCLUDED.name, lat = EXCLUDED.lat, lng = EXCLUDED.lng,
-           address = COALESCE(gyms.address, EXCLUDED.address), description = COALESCE(gyms.description, EXCLUDED.description)
-         RETURNING id`,
-        [g.osmId, g.name, g.lat, g.lng, g.address, g.description]
-      )
-      await addGymCategories(gymRows[0].id, g.categories)
+      continue
     }
+
+    // Same name+proximity heuristic as the bot-sweep/find-more-gyms
+    // duplicate checks, but here checking against rows that already
+    // HAVE a different osm_id - not the legacyMatch case above. Caught
+    // live: OSM itself sometimes maps the same real-world gym twice
+    // under two different element IDs (e.g. "Income Gym" as two
+    // separate nodes ~4m apart in Chiang Mai), which ON CONFLICT
+    // (osm_id) can never catch since neither element's ID collides with
+    // the other's - every sync kept re-affirming both rows as distinct,
+    // permanently. Merging into the match here instead of inserting
+    // means the second OSM element just keeps topping up the same gym
+    // row every sync rather than ever getting its own.
+    const { rows: nearDuplicate } = await pool.query(
+      `SELECT id, similarity(name, $1) AS name_similarity,
+         (6371 * acos(GREATEST(-1, LEAST(1,
+           cos(radians($2)) * cos(radians(lat)) * cos(radians(lng) - radians($3)) +
+           sin(radians($2)) * sin(radians(lat))
+         )))) AS distance_km
+       FROM gyms
+       WHERE osm_id IS NOT NULL AND osm_id != $4
+       ORDER BY distance_km ASC
+       LIMIT 3`,
+      [g.name, g.lat, g.lng, g.osmId]
+    )
+    const duplicate = nearDuplicate.find((row) => isDuplicateMatch(row.distance_km, row.name_similarity))
+    if (duplicate) {
+      await pool.query(
+        `UPDATE gyms SET address = COALESCE(address, $2), description = COALESCE(description, $3) WHERE id = $1`,
+        [duplicate.id, g.address, g.description]
+      )
+      await addGymCategories(duplicate.id, g.categories)
+      continue
+    }
+
+    const { rows: gymRows } = await pool.query(
+      `INSERT INTO gyms (osm_id, name, lat, lng, data_source, address, description)
+       VALUES ($1, $2, $3, $4, 'osm', $5, $6)
+       ON CONFLICT (osm_id) DO UPDATE SET name = EXCLUDED.name, lat = EXCLUDED.lat, lng = EXCLUDED.lng,
+         address = COALESCE(gyms.address, EXCLUDED.address), description = COALESCE(gyms.description, EXCLUDED.description)
+       RETURNING id`,
+      [g.osmId, g.name, g.lat, g.lng, g.address, g.description]
+    )
+    await addGymCategories(gymRows[0].id, g.categories)
   }
 }
 
