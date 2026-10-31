@@ -38,6 +38,7 @@ Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a con
 - [ ] Linting, formatting and test frameworks (unit, integration, end-to-end) set up before any feature code
 - [ ] CI/CD pipelines (lint, type-check, tests on every PR; deploys per environment)
 - [ ] GitHub branch protection, so nothing merges without the required reviews and green checks
+- [ ] Automate the review bots on every PR: CodeRabbit, and the second Claude review via the Claude Code GitHub Action (`/install-github-app` in the Claude CLI sets it up)
 - [ ] Error tracking and logging
 
 ## 4. Build
