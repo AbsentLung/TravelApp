@@ -11,7 +11,7 @@ Yes. 10,000 daily users (NFR-1) is a modest load that one small server plus a da
 | Requirement | Verdict | What the design does about it |
 |---|---|---|
 | FR-11 Google Maps sweeps | **Decided: we scrape Google Maps.** This breaks Google's Terms of Service; Joey has accepted that risk (risk: blocked IPs, account bans, legal letters). | The sweep is still a *pluggable data source*, so the Google Maps scraper sits behind the same interface as Overpass. If it gets blocked or we need to stop, the Places API or another source swaps in without touching the rest of the system. Regional sources (OOS-1) slot in the same way. |
-| NFR-2 1,000 bot req/s | **Realistic as an intake rate, using queues.** Bot requests are accepted into a queue at up to 1,000/s and *drained* at a much slower, controlled rate by workers. | Separate queues with different drain rates: "find more gyms" sweeps drain slowly (they hit Google Maps), per-gym requests (chat, bot review) drain faster. Same-area sweep requests are merged so the backlog stays bounded. See section 5.3. |
+| NFR-2 1,000 bot req/s | **Realistic as an intake rate, using queues.** Bot requests are accepted into a queue at up to 1,000/s and *drained* at a much slower, controlled rate by workers. | Separate queues with different drain rates: "find more gyms" sweeps drain slowly (they hit Google Maps), per-gym requests (chat, bot review) drain faster. Same-area sweep requests are merged so the backlog stays bounded. Workers on each queue **auto-scale and run in parallel**, adding copies as the queue grows. See section 5.3. |
 | FR-4 "every gym in the world" | **Realistic as a number that grows with use.** Every search, OSM refresh and bot sweep adds gyms. | Lazy per-tile OSM refresh + daily coverage job + sweeps + user submissions. |
 | FR-8/9 AI chatbot | **Realistic.** Runs on Ollama on our own server, so no per-call bill. | The limit is our server's compute instead: a queue caps how many LLM jobs run at once, and answers are saved on the gym record (FR-9) so repeat questions skip the LLM. Kept behind one LLM interface. |
 
@@ -360,7 +360,27 @@ Why the extra pieces matter: at a sustained 1,000/s in and a few per minute out,
 2. **Skip fresh tiles:** a tile swept recently is answered from the database, not re-queued.
 3. **Per-user limits:** one user or bot can't fill the queue alone.
 
-**Verdict:** queue chat, bot review, sweeps and external refreshes; never queue map reads. Use separate queues with their own drain rates (slow for sweeps, faster for per-gym jobs). Redis queues (Variation 2) handle 1,000 jobs/s easily and Redis is already in the plan, so start there. Kafka (Variation 5) is worth it only if we later need very high volume or several systems reading the same event stream; because the queue sits behind one interface, switching later doesn't touch the rest of the code. Postgres-backed queues are a reasonable fallback if we ever want to drop Redis.
+#### Auto-scaling the workers
+
+Each queue's workers scale on their own, based on how long that queue is. More jobs waiting means more worker copies running in parallel; an empty queue scales down to a minimum (or zero).
+
+```mermaid
+flowchart LR
+    QG[["Gym queue<br/>depth = 5,000"]] --> AS1{Autoscaler<br/>watches queue depth}
+    QS[["Sweep queue<br/>depth = 50,000"]] --> AS2{Autoscaler}
+    AS1 -->|scale out| WG1[LLM worker] & WG2[LLM worker] & WG3[LLM worker ...]
+    AS2 -->|scale out, but capped| WS1[Sweep worker] & WS2[Sweep worker]
+    WS1 & WS2 --> RL[Shared rate limiter<br/>per source, in Redis]
+    RL --> GM[Google Maps / Overpass]
+```
+
+- ✅ Pay for capacity only when there's a backlog; grows with users without code changes (NFR-4).
+- ✅ Gym and sweep queues scale independently, so a seeding run doesn't steal capacity from chat.
+- ❌ Sweep workers need a **shared** rate limiter and a max worker count. Without it, scaling out just sends more scrape requests at once and gets us blocked faster. More sweep workers help with parsing and dedupe work, not with going past the source's limit.
+- ❌ LLM workers scale only as far as Ollama hardware does. Auto-scaling them means auto-scaling GPU machines, which is the main cost lever.
+- ❌ Needs a platform that can scale on queue depth (e.g. Kubernetes with KEDA, Cloud Run, Fly.io machines). The near-free single VM can't, so this comes with the move to managed hosting.
+
+**Verdict:** queue chat, bot review, sweeps and external refreshes; never queue map reads. Use separate queues with their own drain rates (slow for sweeps, faster for per-gym jobs), each with workers that auto-scale on queue depth. Redis queues (Variation 2) handle 1,000 jobs/s easily and Redis is already in the plan, so start there. Kafka (Variation 5) is worth it only if we later need very high volume or several systems reading the same event stream; because the queue sits behind one interface, switching later doesn't touch the rest of the code. Postgres-backed queues are a reasonable fallback if we ever want to drop Redis.
 
 ### 5.4 Putting the chosen blocks together
 
@@ -480,13 +500,13 @@ stateDiagram-v2
 |---|---|
 | Launch → 10k DAU (~30 req/s peak) | 1 API + 1 worker (can share one small VM), managed Postgres, Redis free tier, CDN in front. |
 | ~100k DAU (~300 req/s) | 2–4 API copies behind a load balancer, more workers, Postgres read replica. CDN absorbs most map reads. |
-| ~1,000 req/s (NFR-2's number) | Map reads are ~all CDN/Redis hits, so API copies scale horizontally. Bot requests are accepted into queues at full speed and drained at each queue's own rate (section 5.3). Ollama throughput is bounded by our hardware: add a GPU box or more LLM workers to drain the gym queue faster. Sweeps drain slowly on purpose to avoid getting blocked by Google Maps. |
+| ~1,000 req/s (NFR-2's number) | Map reads are ~all CDN/Redis hits, so API copies scale horizontally. Bot requests are accepted into queues at full speed and drained at each queue's own rate (section 5.3). Workers auto-scale on queue depth; Ollama throughput is bounded by how many GPU machines the autoscaler may add. Sweeps drain slowly on purpose to avoid getting blocked by Google Maps. |
 
 ## 7. Decisions
 
 Settled in PR review:
 - **FR-11:** sweeps scrape Google Maps; ToS risk accepted. Scraper sits behind the pluggable source interface.
-- **NFR-2:** 1,000 bot req/s is handled by queues with separate drain rates (section 5.3).
+- **NFR-2:** 1,000 bot req/s is handled by queues with separate drain rates, whose workers auto-scale and run in parallel (section 5.3).
 - **LLM:** Ollama on our own server.
 - **FR-4:** coverage grows with use.
 
