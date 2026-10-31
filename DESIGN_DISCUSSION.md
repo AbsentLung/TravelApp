@@ -6,16 +6,16 @@ Fixed constraint: one Expo (Expo Router, TypeScript) client for Web, Android and
 
 ## 1. Are the requirements realistic?
 
-Mostly yes. 10,000 daily users (NFR-1) is a modest load that one small server plus a database can handle, and every functional requirement has been built in some form already in the demo code on this branch. Four things need adjusting before they turn into design constraints:
+Yes. 10,000 daily users (NFR-1) is a modest load that one small server plus a database can handle, and every functional requirement has been built in some form already in the demo code on this branch. Reviewing them against the design, with Joey's decisions from the PR review:
 
 | Requirement | Verdict | What the design does about it |
 |---|---|---|
-| FR-11 Google Maps sweeps | **Not as written.** Scraping Google Maps breaks its Terms of Service (see open question 1). | Treat the sweep as a *pluggable data source*. Ship with compliant sources (OSM/Overpass, then Google Places API or Foursquare, paid per call). A different source can be swapped in per region later (OOS-1) without touching the rest of the system. |
-| NFR-2 1,000 bot req/s | **Unrealistic for 10k DAU, and unaffordable if it means LLM calls.** 10k users × ~20 actions ≈ 2–3 req/s average, maybe 30 at peak. | Design for ~50 req/s peak on the API and a few LLM calls per second, behind a queue. Section 6 shows how each piece scales if real load ever approaches 1,000/s. |
-| FR-4 "every gym in the world" | Realistic as *"every gym our sources know about"*. Some regions will start sparse. | Background coverage job + user submissions fill gaps over time. |
-| FR-8/9 AI chatbot | Realistic, but it's the most expensive part per user. | LLM calls go through one interface and a queue, with answers cached on the gym record (FR-9) so repeat questions cost nothing. |
+| FR-11 Google Maps sweeps | **Decided: we scrape Google Maps.** This breaks Google's Terms of Service; Joey has accepted that risk (risk: blocked IPs, account bans, legal letters). | The sweep is still a *pluggable data source*, so the Google Maps scraper sits behind the same interface as Overpass. If it gets blocked or we need to stop, the Places API or another source swaps in without touching the rest of the system. Regional sources (OOS-1) slot in the same way. |
+| NFR-2 1,000 bot req/s | **Realistic as an intake rate, using queues.** Bot requests are accepted into a queue at up to 1,000/s and *drained* at a much slower, controlled rate by workers. | Separate queues with different drain rates: "find more gyms" sweeps drain slowly (they hit Google Maps), per-gym requests (chat, bot review) drain faster. Same-area sweep requests are merged so the backlog stays bounded. See section 5.3. |
+| FR-4 "every gym in the world" | **Realistic as a number that grows with use.** Every search, OSM refresh and bot sweep adds gyms. | Lazy per-tile OSM refresh + daily coverage job + sweeps + user submissions. |
+| FR-8/9 AI chatbot | **Realistic.** Runs on Ollama on our own server, so no per-call bill. | The limit is our server's compute instead: a queue caps how many LLM jobs run at once, and answers are saved on the gym record (FR-9) so repeat questions skip the LLM. Kept behind one LLM interface. |
 
-**Bottom line:** I'm on board with the requirements once FR-11 is reworded to "sweep using a licensed source" and NFR-2 is restated as a peak rate we can afford. The options below all assume those two changes.
+**Bottom line:** on board. The options below all assume these decisions.
 
 ## 2. What every option has to handle
 
@@ -54,7 +54,7 @@ flowchart TB
         J[In-process timers<br/>coverage job]
     end
     API --> PG[(Postgres + PostGIS)]
-    C --> LLM[LLM provider<br/>Ollama now, Claude later]
+    C --> LLM[LLM provider<br/>Ollama on our server]
     S --> SRC[Data sources<br/>Overpass, Places API]
     J --> SRC
 ```
@@ -83,7 +83,7 @@ flowchart TB
     API --> PG[(Postgres + PostGIS<br/>source of truth)]
     RC --> W[Workers<br/>1..N copies]
     W --> PG
-    W --> LLM[LLM interface<br/>Ollama now, Claude later]
+    W --> LLM[LLM interface<br/>Ollama on our server]
     W --> SRCS[Data source plugins<br/>Overpass, Places API, ...]
     SCH[Scheduler<br/>coverage job, weekly refresh] --> RC
 ```
@@ -332,7 +332,35 @@ sequenceDiagram
 - ✅ Zero ops, effectively unlimited scale, durable.
 - ❌ Ties us to one cloud; harder to run locally; overkill now.
 
-**Verdict:** queue chat, bot review, sweeps and external refreshes; never queue map reads. Use a Redis queue (Variation 2) since Redis is already in the plan, with a per-source rate limiter on the sweep/refresh queues so Overpass and paid APIs are never exceeded. Postgres-backed queues are a reasonable fallback if we ever want to drop Redis.
+**Variation 5: Kafka (event log)**
+- ✅ Handles millions of messages per second; messages are stored on disk and can be replayed.
+- ✅ Good when many different consumers need the same stream of events.
+- ❌ It's a log, not a job queue: no built-in per-job retries, delays or rate limits, so we'd build those ourselves.
+- ❌ Heavy to run (a cluster, or a paid managed service). 1,000 msg/s is about 0.1% of what it's built for.
+
+#### Handling 1,000 bot requests per second (NFR-2)
+
+The idea is to accept requests fast and process them slowly. The queue absorbs the burst; each queue drains at the rate its downstream can take.
+
+```mermaid
+flowchart LR
+    App([Users / bots<br/>up to 1,000 req/s]) --> API[API<br/>validate, per-user limit,<br/>enqueue, return job id]
+    API --> M{Merge duplicates<br/>same tile already queued?}
+    M -->|new| QS[["Sweep queue<br/>'find more gyms'<br/>drains SLOW, e.g. a few per minute"]]
+    M -->|new| QG[["Gym queue<br/>chat, bot review<br/>drains FAST, limited by Ollama capacity"]]
+    M -->|duplicate| J[Attach to existing job]
+    QS --> WS[Sweep workers] --> GM[Google Maps scraper<br/>+ other source plugins]
+    QG --> WG[LLM workers] --> OL[Ollama]
+    WS --> SUB[(Submissions)]
+    WG --> PG[(Postgres)]
+```
+
+Why the extra pieces matter: at a sustained 1,000/s in and a few per minute out, a sweep queue would grow by ~86 million jobs a day and never empty. Three things keep it bounded:
+1. **Merge duplicates:** many users asking to sweep the same area becomes one job (keyed by geohash tile).
+2. **Skip fresh tiles:** a tile swept recently is answered from the database, not re-queued.
+3. **Per-user limits:** one user or bot can't fill the queue alone.
+
+**Verdict:** queue chat, bot review, sweeps and external refreshes; never queue map reads. Use separate queues with their own drain rates (slow for sweeps, faster for per-gym jobs). Redis queues (Variation 2) handle 1,000 jobs/s easily and Redis is already in the plan, so start there. Kafka (Variation 5) is worth it only if we later need very high volume or several systems reading the same event stream; because the queue sits behind one interface, switching later doesn't touch the rest of the code. Postgres-backed queues are a reasonable fallback if we ever want to drop Redis.
 
 ### 5.4 Putting the chosen blocks together
 
@@ -390,16 +418,17 @@ sequenceDiagram
 
 This also answers the open question in `docs/gym-data-design.md`: a stale tile is served immediately and refreshed in the background, so no user waits on Overpass.
 
-**Pluggable data sources (FR-11, OOS-1).** Sweeps, the coverage job and the weekly refresh all call the same interface. Choosing a source is config, so Google Places, Foursquare, or regional sources can be added without changing anything else.
+**Pluggable data sources (FR-11, OOS-1).** Sweeps, the coverage job and the weekly refresh all call the same interface. Choosing a source is config, so the Google Maps scraper, Google Places API, Foursquare, or regional sources can be added or swapped without changing anything else.
 
 ```mermaid
 flowchart LR
     J[Sweep / refresh / coverage job] --> SEL{Source selector<br/>by region + config}
     SEL --> OSM[OverpassSource<br/>free]
+    SEL --> GMS[GoogleMapsScraper<br/>sweeps, rate-limited]
     SEL --> GP[GooglePlacesSource<br/>licensed, paid]
     SEL --> FSQ[FoursquareSource<br/>licensed, paid]
     SEL -.later, OOS-1.-> REG[Yandex / Baidu source]
-    OSM & GP & FSQ & REG --> N[Normalize + dedupe<br/>against existing gyms]
+    OSM & GMS & GP & FSQ & REG --> N[Normalize + dedupe<br/>against existing gyms]
     N -->|known source, refresh| PG[(Gyms)]
     N -->|sweep result| SUB[(Submissions<br/>FR-12)]
 ```
@@ -418,7 +447,7 @@ stateDiagram-v2
     Rejected --> [*]
 ```
 
-**AI chat (FR-8, 9).** The API accepts the question and returns a job id; a worker calls the LLM through the single LLM interface (Ollama now, Claude later) with the gym's record as context, then streams or posts the answer back. Answers to common questions are saved on the gym record (via the approval flow) so the next user gets them without an LLM call.
+**AI chat (FR-8, 9).** The API accepts the question and returns a job id; a worker calls the LLM through the single LLM interface (Ollama on our own server) with the gym's record as context, then streams or posts the answer back. Answers to common questions are saved on the gym record (via the approval flow) so the next user gets them without an LLM call.
 
 ### How Option B scales
 
@@ -426,12 +455,17 @@ stateDiagram-v2
 |---|---|
 | Launch → 10k DAU (~30 req/s peak) | 1 API + 1 worker (can share one small VM), managed Postgres, Redis free tier, CDN in front. |
 | ~100k DAU (~300 req/s) | 2–4 API copies behind a load balancer, more workers, Postgres read replica. CDN absorbs most map reads. |
-| ~1,000 req/s (NFR-2's number) | Map reads are ~all CDN/Redis hits, so API copies scale horizontally. LLM throughput is bounded by budget, not architecture: a queue with per-user rate limits. External sweeps stay rate-limited by the source's terms regardless. |
+| ~1,000 req/s (NFR-2's number) | Map reads are ~all CDN/Redis hits, so API copies scale horizontally. Bot requests are accepted into queues at full speed and drained at each queue's own rate (section 5.3). Ollama throughput is bounded by our hardware: add a GPU box or more LLM workers to drain the gym queue faster. Sweeps drain slowly on purpose to avoid getting blocked by Google Maps. |
 
-## 7. Decisions needed from Joey
+## 7. Decisions
 
-1. **Pick the architecture** (recommended: B) and the building blocks in section 5 (Postgres+PostGIS, caches at client/CDN/Redis, Redis queues for slow work).
-2. **Reword FR-11** to "sweep using a licensed source (e.g. Google Places API)" instead of scraping Google Maps.
-3. **Restate NFR-2** as an affordable peak, e.g. "~50 API req/s and a few LLM calls/s at launch, scaling horizontally".
+Settled in PR review:
+- **FR-11:** sweeps scrape Google Maps; ToS risk accepted. Scraper sits behind the pluggable source interface.
+- **NFR-2:** 1,000 bot req/s is handled by queues with separate drain rates (section 5.3).
+- **LLM:** Ollama on our own server.
+- **FR-4:** coverage grows with use.
 
-Once these are settled, the next docs are stack choices, then schema, then API.
+Still needed from Joey:
+1. **Pick the architecture** (recommended: B) and the building blocks in section 5 (Postgres+PostGIS, caches at client/CDN/Redis, Redis queues to start, Kafka only if volume demands it).
+
+Once this is settled, the next docs are stack choices, then schema, then API.
