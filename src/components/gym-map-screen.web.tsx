@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 // Only this file (and gym-map-screen.tsx's WebView bridge) touches Leaflet
 // directly - gym-panels.tsx has everything else (chat, reviews, edit/add-
@@ -21,6 +21,7 @@ import {
   UNKNOWN_CATEGORY,
   formatCents,
   acceptsDropIn,
+  gymMatchesSearch,
   prefetchAreaCell,
   TrialSection,
   ReviewsSection,
@@ -320,6 +321,13 @@ export default function MapScreen() {
   const [newGymLocation, setNewGymLocation] = useState<NewGymLocation | null>(null);
   const [dropInOnly, setDropInOnly] = useState(false);
   const [trialOnly, setTrialOnly] = useState(false);
+  // Live, substring, case-insensitive against name/description/address/
+  // categories (gymMatchesSearch in gym-panels.tsx) - filters the actual
+  // markers on screen (same filter chain as drop-in/trial/category
+  // below), not a separate search-results list, per explicit request
+  // that every keystroke should make gyms appear/disappear on the map
+  // itself.
+  const [searchQuery, setSearchQuery] = useState('');
   // Empty set = no filter applied (show every category) - same
   // "unchecked means unfiltered" convention as dropInOnly/trialOnly,
   // just extended to multiple simultaneous choices since a gym's
@@ -471,6 +479,25 @@ export default function MapScreen() {
     return () => loop.stop();
   }, [showScanNudge, nudgeBlink]);
 
+  // Measured, not guessed - a percentage-based arrow position drifts off
+  // the real button on different screen sizes (confirmed live on native;
+  // fixed here too for the same reason). mapAreaRef is the same
+  // position:'relative' ancestor the overlay/arrow are positioned
+  // against, so measureLayout against it gives coordinates in that exact
+  // space, no extra conversion needed.
+  const mapAreaRef = useRef<View>(null);
+  const findMoreButtonRef = useRef<any>(null);
+  const [findMoreButtonLayout, setFindMoreButtonLayout] = useState<{ x: number; y: number; width: number; height: number } | null>(
+    null
+  );
+  const measureFindMoreButton = () => {
+    findMoreButtonRef.current?.measureLayout?.(
+      mapAreaRef.current,
+      (x: number, y: number, width: number, height: number) => setFindMoreButtonLayout({ x, y, width, height }),
+      () => {}
+    );
+  };
+
   const loadGyms = () => {
     const url =
       `${API_BASE_URL}/api/gyms/by-area?minLat=${params.minLat}&minLng=${params.minLng}` +
@@ -514,7 +541,9 @@ export default function MapScreen() {
 
   const hasUnknownCategoryGyms = mapGyms.some((g) => g.categories.length === 0);
 
+  const normalizedSearch = searchQuery.trim().toLowerCase();
   const visibleGyms = mapGyms
+    .filter((g) => gymMatchesSearch(g, normalizedSearch))
     .filter((g) => !dropInOnly || acceptsDropIn(g))
     .filter((g) => !trialOnly || (g.trial_days != null && g.trial_days > 0))
     .filter(
@@ -557,7 +586,7 @@ export default function MapScreen() {
 
   return (
     <View style={styles.root}>
-      <View style={styles.mapArea}>
+      <View style={styles.mapArea} ref={mapAreaRef}>
         <MapContainer center={center} zoom={initialZoom} style={styles.map}>
           <MapResize panelOpen={panelOpen} />
           <MapViewSync center={center} zoom={initialZoom} />
@@ -605,6 +634,23 @@ export default function MapScreen() {
         {osmLoadingCount > 0 && (
           <View style={styles.osmLoadingNote} pointerEvents="none">
             <Text style={styles.osmLoadingNoteText}>Finding gyms on OSM…</Text>
+          </View>
+        )}
+
+        {zoom >= FILTERS_VISIBLE_AT_ZOOM && (
+          <View style={styles.searchFilterWrap}>
+            <TextInput
+              style={styles.searchFilterInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search gyms on screen…"
+              placeholderTextColor="#9AA3AB"
+            />
+            {searchQuery.length > 0 && (
+              <Pressable style={styles.searchFilterClear} onPress={() => setSearchQuery('')}>
+                <Text style={styles.searchFilterClearText}>✕</Text>
+              </Pressable>
+            )}
           </View>
         )}
 
@@ -694,21 +740,34 @@ export default function MapScreen() {
         )}
         {!addingGym && !newGymLocation && zoom >= FILTERS_VISIBLE_AT_ZOOM && showScanNudge && (
           <>
-            <View style={styles.scanNudgeOverlay} pointerEvents="none" />
+            <Pressable style={styles.scanNudgeOverlay} onPress={() => setShowScanNudge(false)} />
             <View style={styles.scanNudgeMessageBox} pointerEvents="none">
               <Text style={styles.scanNudgeMessageText}>
-                No one has scanned this area for gyms yet. Click this button for better results.
+                No one has scanned this area for gyms yet. Click "Find more gyms" for better results.
               </Text>
             </View>
-            <Text style={styles.scanNudgeArrow} pointerEvents="none">
-              ↗
-            </Text>
+            {findMoreButtonLayout && (
+              <Text
+                style={[
+                  styles.scanNudgeArrow,
+                  {
+                    top: findMoreButtonLayout.y + findMoreButtonLayout.height + 6,
+                    left: findMoreButtonLayout.x + findMoreButtonLayout.width / 2 - 18,
+                  },
+                ]}
+                pointerEvents="none"
+              >
+                ↑
+              </Text>
+            )}
           </>
         )}
         {!addingGym && !newGymLocation && (
           <View style={styles.topRightButtons}>
             {zoom >= FILTERS_VISIBLE_AT_ZOOM && (
               <AnimatedPressable
+                ref={findMoreButtonRef}
+                onLayout={measureFindMoreButton}
                 style={[
                   styles.findMoreButton,
                   findingMore && panelStyles.submitButtonDisabled,
@@ -941,9 +1000,34 @@ const styles = StyleSheet.create({
     cursor: 'pointer',
   },
   backButtonText: { fontSize: 13, fontWeight: '600', color: '#1C2430' },
-  categoryFilterWrap: {
+  searchFilterWrap: {
     position: 'absolute',
     top: 56,
+    left: 16,
+    zIndex: 1000,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  searchFilterInput: {
+    width: 200,
+    backgroundColor: 'white',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    fontSize: 13,
+    color: '#1C2430',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.2)' as unknown as undefined,
+  },
+  searchFilterClear: {
+    position: 'absolute',
+    right: 10,
+    // @ts-expect-error - web-only cursor hint, fine for the demo
+    cursor: 'pointer',
+  },
+  searchFilterClearText: { fontSize: 13, color: '#6B7680' },
+  categoryFilterWrap: {
+    position: 'absolute',
+    top: 96,
     left: 16,
     // Higher than dropInFilter/trialFilter's 1000 - the open dropdown's
     // row list extends down far enough to visually overlap those two
@@ -992,7 +1076,7 @@ const styles = StyleSheet.create({
   categoryDropdownRowText: { fontSize: 13, color: '#1C2430', flex: 1 },
   dropInFilter: {
     position: 'absolute',
-    top: 96,
+    top: 136,
     left: 16,
     backgroundColor: 'white',
     paddingHorizontal: 12,
@@ -1009,7 +1093,7 @@ const styles = StyleSheet.create({
   dropInFilterText: { fontSize: 13, color: '#1C2430', fontWeight: '600' },
   trialFilter: {
     position: 'absolute',
-    top: 136,
+    top: 176,
     left: 16,
     backgroundColor: 'white',
     paddingHorizontal: 12,
@@ -1105,7 +1189,9 @@ const styles = StyleSheet.create({
   findMoreMessageText: { fontSize: 12, color: '#1C2430' },
   // zIndex sits below topRightButtons (1000) on purpose - the button
   // itself needs to pop out brighter against this dimmed backdrop, not
-  // get dimmed along with everything else.
+  // get dimmed along with everything else. A real Pressable (not a
+  // decorative View) so clicking anywhere on the map also dismisses the
+  // nudge, not just clicking the button itself.
   scanNudgeOverlay: {
     position: 'absolute',
     top: 0,
@@ -1129,11 +1215,12 @@ const styles = StyleSheet.create({
     zIndex: 960,
   },
   scanNudgeMessageText: { fontSize: 14, color: '#1C2430', textAlign: 'center', lineHeight: 20 },
+  // top/left are set inline, measured from the real "Find more gyms"
+  // button (findMoreButtonLayout) rather than guessed as a percentage -
+  // a percentage drifted off the actual button on a real device.
   scanNudgeArrow: {
     position: 'absolute',
-    top: '22%',
-    right: '12%',
-    fontSize: 48,
+    fontSize: 40,
     color: 'white',
     textShadowColor: 'rgba(0,0,0,0.4)',
     textShadowOffset: { width: 0, height: 2 },
