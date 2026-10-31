@@ -433,6 +433,31 @@ flowchart LR
     N -->|sweep result| SUB[(Submissions<br/>FR-12)]
 ```
 
+**Pre-release seeding (new requirement: populate top travel destinations before launch).** The seeding script is not a separate system. It is a small command-line tool that turns a list of destinations into sweep jobs, and then reuses the same queue, workers and source plugins as user-requested sweeps.
+
+```mermaid
+flowchart LR
+    L[Destination list<br/>e.g. top 100 travel cities] --> S[Seed script<br/>CLI, run by us]
+    S --> T[Split each destination's area<br/>into geohash tiles]
+    T --> QS[["Sweep queue<br/>seed jobs at LOW priority"]]
+    U([User 'find more gyms']) --> QS
+    QS --> WS[Sweep workers<br/>same rate limits]
+    WS --> SRC[Source plugins<br/>Overpass first, then Google Maps scraper]
+    SRC --> N[Normalize + dedupe]
+    N --> D{Seed job?}
+    D -->|yes| BR[Bot review only<br/>admin spot-checks a sample]
+    D -->|no, user sweep| SUB[(Submissions<br/>normal approval flow)]
+    BR --> PG[(Gyms)]
+    SUB --> PG
+```
+
+- ✅ No new pipeline to build or maintain: seeding is "lots of sweeps", so it tests the real sweep path before launch.
+- ✅ Resumable: progress is just which tiles are fresh in `fetched_areas`, so a crashed or blocked run picks up where it stopped.
+- ✅ Low priority means user sweeps after launch still jump ahead if seeding is still running.
+- ✅ Same rate limits protect us from getting blocked mid-seed.
+- ❌ Slow by design. Seeding many cities at a careful scrape rate takes days, so it should start well before release.
+- ❌ Thousands of seeded gyms can't each go through admin approval (FR-17). The diagram assumes seeded results get bot review only, with admins checking a sample. **This needs Joey's OK.**
+
 **Submissions and approval (FR-12, 16, 17, 18).** User submissions, sweep results and chatbot-found facts all enter the same pipeline.
 
 ```mermaid
@@ -466,6 +491,7 @@ Settled in PR review:
 - **FR-4:** coverage grows with use.
 
 Still needed from Joey:
-1. **Pick the architecture** (recommended: B) and the building blocks in section 5 (Postgres+PostGIS, caches at client/CDN/Redis, Redis queues to start, Kafka only if volume demands it).
+1. **Seeded gyms and approval:** can pre-release seed results skip per-gym admin approval (bot review + admin spot checks), or must every one go through FR-17?
+2. **Pick the architecture** (recommended: B) and the building blocks in section 5 (Postgres+PostGIS, caches at client/CDN/Redis, Redis queues to start, Kafka only if volume demands it).
 
 Once this is settled, the next docs are stack choices, then schema, then API.
