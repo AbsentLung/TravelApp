@@ -356,10 +356,12 @@ sequenceDiagram
 
 **Data loss.** Redis keeps data in memory, so a crash *can* lose recent jobs. **Decided by Joey (2026-10-31): bot jobs (sweeps, chat replies, bot review) are allowed to fail or be lost, but the user who asked must be told.** So the design doesn't try to make every job survive; it makes sure no failure is silent:
 
-1. **Every user request is a row in Postgres first.** A `requests` record (sweep, chat question, gym submission) with a status: `pending` → `running` → `done` or `failed`, plus a deadline. The queued job only carries the row's ID. A user's own submitted data is never lost, even if its job is.
-2. **Workers report failures.** A job that errors, or runs out of retries, sets its row to `failed` with a short reason.
-3. **Timeout watchdog catches lost jobs.** A periodic check marks any `pending`/`running` row past its deadline as `failed` (e.g. "timed out"). This covers jobs Redis lost in a crash, since nothing would ever report on them.
-4. **The user is told in the app.** The request's status shows on the "My requests" screen (FR-18) and the chat / sweep screen, with a notification when it fails and a **Retry** button that creates a new job.
+1. **Every user request is a row in Postgres first.** A `requests` record (sweep, chat question, gym submission) with a status of `pending`, `completed` or `failed`, plus a deadline. The queued job only carries the row's ID. A user's own submitted data is never lost, even if its job is.
+2. **Workers report the result.** A finished job sets its row to `completed`; one that errors or runs out of retries sets it to `failed` with a short reason.
+3. **Timeout watchdog catches lost jobs.** A periodic check marks any `pending` row past its deadline as `failed` (e.g. "timed out"). This covers jobs Redis lost in a crash, since nothing would ever report on them.
+4. **The user is told in the app** (decided by Joey, 2026-10-31):
+   - **Signed in:** the request is stored against their account and appears on **one "My requests" page**, together with their add-gym and update-gym requests (FR-18). Each shows `pending`, `completed` or `failed`, with a **Retry** button on failed ones and a notification when the status changes.
+   - **Signed out** (e.g. chat, which doesn't need an account per FR-15): the status shows only on the screen where they asked, for that session. The row isn't linked to anyone and is cleaned up after a short time. Signing in is what makes a request show up in "My requests".
 5. **Persistence still on:** Redis `appendfsync everysec` keeps losses to ~1 second of jobs, so failures stay rare.
 
 ```mermaid
@@ -376,13 +378,13 @@ sequenceDiagram
     API-->>App: request_id
     alt job runs
         W->>Q: take job
-        W->>PG: status = done, or failed + reason
+        W->>PG: status = completed, or failed + reason
     else job lost (Redis crash)
-        WD->>PG: every minute: past deadline and not done?
+        WD->>PG: every minute: pending past deadline?
         WD->>PG: status = failed ("timed out")
     end
     App->>API: poll / push for request status
-    API-->>App: done, or failed + Retry button
+    API-->>App: completed, or failed + Retry button
 ```
 
 **When Kafka (or a managed queue like SQS) would be the better pick:** if volume grows into hundreds of thousands of events per second, if several separate systems need to read the same event stream (analytics, search indexing, notifications), or if we need to replay history. Because the queue sits behind one interface, switching then is a new implementation, not a rewrite.
@@ -636,7 +638,7 @@ Settled in PR review:
 - **FR-4:** coverage grows with use.
 - **Architecture:** Option B, modular monolith API + background workers via a queue.
 - **Database:** PostgreSQL + PostGIS (section 5.1).
-- **Failed bot jobs:** may fail or be lost; every request is tracked in Postgres with a deadline, and the user is told in-app when it fails, with a Retry button (section 5.3).
+- **Failed bot jobs:** may fail or be lost; every request is tracked in Postgres with a deadline, and the user is told in-app: signed-in users see pending / completed / failed on one "My requests" page alongside their gym add/update requests; signed-out users see it only in-session (section 5.3).
 
 Still needed from Joey:
 1. **Seeded gyms and approval:** can pre-release seed results skip per-gym admin approval (bot review + admin spot checks), or must every one go through FR-17?
