@@ -13,7 +13,7 @@ Yes. 10,000 daily users (NFR-1) is a modest load that one small server plus a da
 | FR-11 Google Maps sweeps | **Decided: we scrape Google Maps.** This breaks Google's Terms of Service; Joey has accepted that risk (risk: blocked IPs, account bans, legal letters). | The sweep is still a *pluggable data source*, so the Google Maps scraper sits behind the same interface as Overpass. If it gets blocked or we need to stop, the Places API or another source swaps in without touching the rest of the system. Regional sources (OOS-1) slot in the same way. |
 | NFR-2 1,000 bot req/s | **Realistic as an intake rate, using queues.** Bot requests are accepted into a queue at up to 1,000/s and *drained* at a much slower, controlled rate by workers. | Separate queues with different drain rates: "find more gyms" sweeps drain slowly (they hit Google Maps), per-gym requests (chat, bot review) drain faster. Same-area sweep requests are merged so the backlog stays bounded. Workers on each queue **auto-scale and run in parallel**, adding copies as the queue grows. See section 5.3. |
 | FR-4 "every gym in the world" | **Realistic as a number that grows with use.** Every search, OSM refresh and bot sweep adds gyms. | Lazy per-tile OSM refresh + daily coverage job + sweeps + user submissions. |
-| FR-8/9 AI chatbot | **Realistic.** Runs on Ollama on our own server, so no per-call bill. | The limit is our server's compute instead: a queue caps how many LLM jobs run at once, and answers are saved on the gym record (FR-9) so repeat questions skip the LLM. Kept behind one LLM interface. |
+| FR-8/9 AI chatbot | **Realistic.** Demo mode runs Ollama on our own server (no per-call bill); scale mode switches to Claude once there are users and premium accounts (section 6.1). | Behind one LLM interface, so switching is config. In demo mode the limit is our server's compute: a queue caps how many LLM jobs run at once, and answers are saved on the gym record (FR-9) so repeat questions skip the LLM. Kept behind one LLM interface. |
 
 **Bottom line:** on board. The options below all assume these decisions.
 
@@ -54,7 +54,7 @@ flowchart TB
         J[In-process timers<br/>coverage job]
     end
     API --> PG[(Postgres + PostGIS)]
-    C --> LLM[LLM provider<br/>Ollama on our server]
+    C --> LLM[LLM provider<br/>Ollama demo / Claude scale]
     S --> SRC[Data sources<br/>Overpass, Places API]
     J --> SRC
 ```
@@ -83,7 +83,7 @@ flowchart TB
     API --> PG[(Postgres + PostGIS<br/>source of truth)]
     RC --> W[Workers<br/>1..N copies]
     W --> PG
-    W --> LLM[LLM interface<br/>Ollama on our server]
+    W --> LLM[LLM interface<br/>Ollama demo / Claude scale]
     W --> SRCS[Data source plugins<br/>Overpass, Places API, ...]
     SCH[Scheduler<br/>coverage job, weekly refresh] --> RC
 ```
@@ -347,10 +347,10 @@ flowchart LR
     App([Users / bots<br/>up to 1,000 req/s]) --> API[API<br/>validate, per-user limit,<br/>enqueue, return job id]
     API --> M{Merge duplicates<br/>same tile already queued?}
     M -->|new| QS[["Sweep queue<br/>'find more gyms'<br/>drains SLOW, e.g. a few per minute"]]
-    M -->|new| QG[["Gym queue<br/>chat, bot review<br/>drains FAST, limited by Ollama capacity"]]
+    M -->|new| QG[["Gym queue<br/>chat, bot review<br/>drains FAST, limited by LLM capacity"]]
     M -->|duplicate| J[Attach to existing job]
     QS --> WS[Sweep workers] --> GM[Google Maps scraper<br/>+ other source plugins]
-    QG --> WG[LLM workers] --> OL[Ollama]
+    QG --> WG[LLM workers] --> OL[LLM interface<br/>Ollama or Claude]
     WS --> SUB[(Submissions)]
     WG --> PG[(Postgres)]
 ```
@@ -377,7 +377,7 @@ flowchart LR
 - ✅ Pay for capacity only when there's a backlog; grows with users without code changes (NFR-4).
 - ✅ Gym and sweep queues scale independently, so a seeding run doesn't steal capacity from chat.
 - ❌ Sweep workers need a **shared** rate limiter and a max worker count. Without it, scaling out just sends more scrape requests at once and gets us blocked faster. More sweep workers help with parsing and dedupe work, not with going past the source's limit.
-- ❌ LLM workers scale only as far as Ollama hardware does. Auto-scaling them means auto-scaling GPU machines, which is the main cost lever.
+- ❌ LLM workers scale only as far as the LLM does: with Ollama that means GPU machines; with Claude it means API rate limits and the bill. Either way it's the main cost lever.
 - ❌ Needs a platform that can scale on queue depth (e.g. Kubernetes with KEDA, Cloud Run, Fly.io machines). The near-free single VM can't, so this comes with the move to managed hosting.
 
 **Verdict:** queue chat, bot review, sweeps and external refreshes; never queue map reads. Use separate queues with their own drain rates (slow for sweeps, faster for per-gym jobs), each with workers that auto-scale on queue depth. Redis queues (Variation 2) handle 1,000 jobs/s easily and Redis is already in the plan, so start there. Kafka (Variation 5) is worth it only if we later need very high volume or several systems reading the same event stream; because the queue sits behind one interface, switching later doesn't touch the rest of the code. Postgres-backed queues are a reasonable fallback if we ever want to drop Redis.
@@ -402,6 +402,52 @@ flowchart TB
 ## 6. Recommendation: Option B
 
 Option B keeps the simplicity of one codebase but separates the two kinds of work that actually behave differently. It's a short step from the demo code (move slow handlers into job processors), uses the pieces already agreed on, and every scaling move later is "add more copies" rather than a rewrite. Option A is a fine *first deploy* of B's code (run the worker in the same process), but the queue boundary should be in the code from day one.
+
+### 6.1 Two modes: demo and scale
+
+We want to run cheaply now (no paid queues, Ollama), but be able to switch to high-scale mode straight away once there are users and premium accounts. That works if **every piece that differs between modes sits behind an interface, and the mode is picked by config**, not by code changes. Option B fits this well because "API + workers + queue" can all run inside one process in demo mode.
+
+```mermaid
+flowchart TB
+    subgraph Code[Same codebase]
+        LI[LLM interface]
+        QI[Queue interface]
+        CI[Cache interface]
+        SI[Source interface]
+    end
+    CFG{{MODE = demo / scale}} --> Code
+    subgraph Demo[Demo mode: ~free]
+        D1[One VM: API + workers<br/>in one process]
+        D2[Ollama on same/home box]
+        D3[Queue = Postgres table<br/>e.g. pg-boss, no extra service]
+        D4[Cache = in-memory + CDN free tier]
+        D5[(One Postgres + PostGIS)]
+    end
+    subgraph Scale[Scale mode]
+        S1[API copies + auto-scaled workers]
+        S2[Claude API]
+        S3[Queue = Redis, Kafka later]
+        S4[Cache = Redis + CDN]
+        S5[(Managed Postgres + replicas)]
+    end
+    Code -->|demo| Demo
+    Code -->|scale| Scale
+```
+
+| Piece | Demo mode | Scale mode | What switching takes |
+|---|---|---|---|
+| LLM | Ollama | Claude | Config + API key |
+| Queue | Postgres table (pg-boss) or in-process | Redis queue (Kafka later) | Config; drain or move jobs still waiting |
+| Cache | In-memory per process + free CDN | Redis + CDN | Config + a Redis URL |
+| Workers | Same process as API, fixed count | Separate, auto-scaled on queue depth | Deploy config |
+| Database | One Postgres+PostGIS | Managed Postgres + read replicas | Dump/restore or managed migration (the only slow step) |
+
+- ✅ Near-zero cost until there's revenue, with no rewrite when we switch.
+- ✅ Demo mode still exercises the real queue and cache code paths, so the switch is low-risk.
+- ✅ A Postgres-backed queue in demo mode costs nothing extra and keeps jobs safe over restarts (a pure in-memory queue loses them).
+- ❌ Two of everything to test. Mitigation: run the test suite against both modes in CI.
+- ❌ Interfaces must stick to what both sides support (e.g. no Kafka-only or Redis-only features in business logic).
+- ❌ "Immediately" applies to config and services; moving the database to a managed host still needs a short planned migration.
 
 ### Key flows in Option B
 
@@ -492,22 +538,24 @@ stateDiagram-v2
     Rejected --> [*]
 ```
 
-**AI chat (FR-8, 9).** The API accepts the question and returns a job id; a worker calls the LLM through the single LLM interface (Ollama on our own server) with the gym's record as context, then streams or posts the answer back. Answers to common questions are saved on the gym record (via the approval flow) so the next user gets them without an LLM call.
+**AI chat (FR-8, 9).** The API accepts the question and returns a job id; a worker calls the LLM through the single LLM interface (Ollama in demo mode, Claude in scale mode) with the gym's record as context, then streams or posts the answer back. Answers to common questions are saved on the gym record (via the approval flow) so the next user gets them without an LLM call.
 
 ### How Option B scales
 
 | Load | Setup |
 |---|---|
-| Launch → 10k DAU (~30 req/s peak) | 1 API + 1 worker (can share one small VM), managed Postgres, Redis free tier, CDN in front. |
+| Demo mode, launch → 10k DAU (~30 req/s peak) | One small VM running API + workers in one process, Postgres queue, Ollama, free CDN. |
+| Scale mode switch-on | Separate API and auto-scaled workers, Redis cache + queue, Claude, managed Postgres. |
 | ~100k DAU (~300 req/s) | 2–4 API copies behind a load balancer, more workers, Postgres read replica. CDN absorbs most map reads. |
-| ~1,000 req/s (NFR-2's number) | Map reads are ~all CDN/Redis hits, so API copies scale horizontally. Bot requests are accepted into queues at full speed and drained at each queue's own rate (section 5.3). Workers auto-scale on queue depth; Ollama throughput is bounded by how many GPU machines the autoscaler may add. Sweeps drain slowly on purpose to avoid getting blocked by Google Maps. |
+| ~1,000 req/s (NFR-2's number) | Map reads are ~all CDN/Redis hits, so API copies scale horizontally. Bot requests are accepted into queues at full speed and drained at each queue's own rate (section 5.3). Workers auto-scale on queue depth; LLM throughput is bounded by Claude's rate limits and budget (scale mode). Sweeps drain slowly on purpose to avoid getting blocked by Google Maps. |
 
 ## 7. Decisions
 
 Settled in PR review:
 - **FR-11:** sweeps scrape Google Maps; ToS risk accepted. Scraper sits behind the pluggable source interface.
 - **NFR-2:** 1,000 bot req/s is handled by queues with separate drain rates, whose workers auto-scale and run in parallel (section 5.3).
-- **LLM:** Ollama on our own server.
+- **LLM:** Ollama in demo mode, Claude in scale mode, switched by config.
+- **Two modes:** a near-free demo mode and a high-scale mode, switchable by config without code changes (section 6.1).
 - **FR-4:** coverage grows with use.
 
 Still needed from Joey:
