@@ -49,6 +49,12 @@ Each requirement has an ID so later docs (`DESIGN.md`, PRs, tests) can point at 
 - **FR-17** Each request is reviewed first by a bot, then by an admin. The change only goes live after admin approval.
 - **FR-18** Users can see the status of their requests (pending, approved, rejected).
 
+### Pre-seeding gym data
+
+- **FR-19** A script populates all gyms in a given area (e.g. a city or a bounding box), so the map already has data there before any user visits.
+- **FR-20** Before release, the script is run on the most popular travel destinations, so launch users don't land on an empty map.
+- **FR-21** The script can be re-run on an area without creating duplicate gyms, so seeded data can be refreshed.
+
 ## Non-functional requirements
 
 - **NFR-1 Users:** expect 10,000 daily active users.
@@ -71,3 +77,4 @@ These are flags for the research step in phase 1, not changes to the requirement
 4. **Bot approval (FR-17).** What may the bot reject on its own (spam, duplicates, missing fields), and can it ever approve without an admin?
 5. **Chatbot sources (FR-8).** Where is the chatbot allowed to look up gym data (our database only, the gym's own website, the open web)? This affects cost, accuracy, and legal exposure.
 6. **Filter scope (FR-10).** Read here as "filter what's in the current map view". Should search also find gyms outside the view?
+7. **Which destinations to pre-seed (FR-20)?** Who picks the list, and how many cities? A fixed list we write ourselves is simplest; a ranking from published tourism data is more defensible. Pre-seeding should stick to sources we're allowed to store (see question 1).
