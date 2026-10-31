@@ -447,10 +447,33 @@ flowchart TB
 | Workers | Same process as API, fixed count | Separate, auto-scaled on queue depth | Deploy config |
 | Database | One Postgres+PostGIS | Managed Postgres + read replicas | Dump/restore or managed migration (the only slow step) |
 
+**How the switch works: one setting, chosen at startup, not on/off checks in the code.** A single `MODE=demo|scale` setting (or one flag per piece, e.g. `QUEUE=postgres|redis`, `LLM=ollama|claude`) is read once when the server starts and picks which implementation each interface gets. Business code only ever calls `queue.add(...)`, `llm.ask(...)`, `cache.get(...)` and never checks the mode itself.
+
+```mermaid
+flowchart LR
+    ENV{{MODE setting<br/>read once at startup}} --> F[Factory]
+    F -->|demo| PQ[PostgresQueue] & OL[OllamaLLM] & MC[MemoryCache]
+    F -->|scale| RQ[RedisQueue] & CL[ClaudeLLM] & RC[RedisCache]
+    PQ & RQ -.implements.-> QI[Queue interface]
+    OL & CL -.implements.-> LI[LLM interface]
+    MC & RC -.implements.-> CI[Cache interface]
+    BIZ[Business code<br/>chat, sweeps, map] --> QI & LI & CI
+```
+
+| Approach | Why |
+|---|---|
+| ✅ **Mode picks the implementation at startup** | One place to change; demo and scale run the exact same business code; adding Kafka later is one more implementation, not edits everywhere. |
+| ❌ `if (scaleMode)` checks scattered through the code | Easy to miss one; the demo path and scale path drift apart, so the scale path breaks without anyone noticing until switch day. |
+| ❌ **Turning queues *off* in demo mode** (running slow jobs inside the request) | Brings back the problems of Option A: chats and sweeps block the map, no retries, no rate limits on scraping. And the queue code would go untested until switch day. Keep queues **on** in demo mode, just backed by a Postgres table, which costs nothing extra. |
+
+Redis is the piece that can truly be absent in demo mode: the cache falls back to in-memory and the queue to Postgres. Claude vs Ollama is the same pattern.
+
+**CI tests both modes.** The test suite runs twice, once with `MODE=demo` and once with `MODE=scale` (Redis in a test container, Claude stubbed), so neither side can quietly break.
+
 - ✅ Near-zero cost until there's revenue, with no rewrite when we switch.
 - ✅ Demo mode still exercises the real queue and cache code paths, so the switch is low-risk.
 - ✅ A Postgres-backed queue in demo mode costs nothing extra and keeps jobs safe over restarts (a pure in-memory queue loses them).
-- ❌ Two of everything to test. Mitigation: run the test suite against both modes in CI.
+- ❌ Two of everything to test. Mitigation: CI runs the test suite in both modes (above).
 - ❌ Interfaces must stick to what both sides support (e.g. no Kafka-only or Redis-only features in business logic).
 - ❌ "Immediately" applies to config and services; moving the database to a managed host still needs a short planned migration.
 
