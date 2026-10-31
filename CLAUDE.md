@@ -34,5 +34,6 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - Keep every LLM call behind one interface so it can switch to Claude once the app makes money. No provider-specific calls outside that module.
 
 ### Hosting
-- Start near-free: Netlify (web), GCP e2-micro (backend), Cloudflare (DNS/CDN).
-- Move to managed hosting once there is real traffic, so keep config in env vars and avoid host-specific lock-in.
+- AWS (decided by Joey 2026-10-31; replaces the earlier Netlify + GCP e2-micro idea).
+- Demo mode stays near-free on a single small instance; scale mode moves to managed AWS services. Concrete services are being decided in STACK_AND_SCHEMA.md.
+- Keep config in env vars and keep AWS-specific code behind interfaces, so services can be swapped.
