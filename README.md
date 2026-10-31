@@ -49,11 +49,13 @@ Review gate for every section:
 - Second Claude approval
 - Human approval
 
+Parallel work: features that aren't tightly coupled to others are built in parallel with Orca, one Claude CLI per feature. Each Claude CLI opens its own pull request for its feature, which goes through the review gate on its own. Tightly coupled features are built one after another.
+
 Steps:
 - [ ] Walking skeleton, end to end: search a city → fetch nearby gyms from the chosen data source → cache them → show them on the map
 - [ ] Routing
 - [ ] Initial frontend and backend structure built out from the skeleton
-- [ ] Features, one at a time:
+- [ ] Features (in parallel where they're independent, see above):
   - [ ] The map
   - [ ] Homepage
   - [ ] Find by search
