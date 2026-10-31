@@ -338,6 +338,49 @@ sequenceDiagram
 - ❌ It's a log, not a job queue: no built-in per-job retries, delays or rate limits, so we'd build those ourselves.
 - ❌ Heavy to run (a cluster, or a paid managed service). 1,000 msg/s is about 0.1% of what it's built for.
 
+#### Why Redis and not Kafka, and what about data loss?
+
+**Scale.** Kafka scales further, but we don't need that. A single Redis instance handles tens of thousands of jobs per second, so 1,000/s uses a few percent of it. Kafka's advantage starts at hundreds of thousands to millions of messages per second.
+
+**Fit.** Our work is *jobs* (do this sweep, answer this chat), and job features matter most here:
+
+| Need | Redis job queue (BullMQ) | Kafka |
+|---|---|---|
+| Retry a failed job with backoff | Built in | Build it yourself (retry topics) |
+| Delay or schedule a job | Built in | Build it yourself |
+| Priorities (seed jobs low, user sweeps high) | Built in | Separate topics + custom logic |
+| Per-source rate limit (don't get blocked) | Built in | Build it yourself |
+| Merge duplicate jobs (same tile) | Built in (job IDs) | Build it yourself |
+| Replay history, many independent consumers | No | **Yes, its main strength** |
+| Running cost | One small instance / free tier | Cluster or paid managed service |
+
+**Data loss.** Redis keeps data in memory, so a crash *can* lose recent jobs. The design makes that harmless:
+
+1. **Persistence on:** Redis append-only file with `appendfsync everysec`, so at most ~1 second of new jobs is at risk.
+2. **Postgres first, queue second:** anything that matters (a user's gym submission, an admin approval) is written to Postgres *before* a job is queued, and the job only carries the row's ID. Losing the job never loses the data.
+3. **Recovery sweeper:** a periodic job finds Postgres rows stuck in "pending" with no live job and re-queues them.
+4. **The rest can be re-created:** sweeps and chat replies can simply be requested again.
+
+```mermaid
+sequenceDiagram
+    participant App
+    participant API
+    participant PG as Postgres
+    participant Q as Redis queue
+    participant W as Worker
+    participant SW as Recovery sweeper
+    App->>API: submit gym
+    API->>PG: INSERT submission (status = pending)
+    API->>Q: enqueue {submission_id}
+    Note over Q: if Redis crashes here,<br/>the job may be lost...
+    W->>Q: take job
+    W->>PG: bot review, update status
+    SW->>PG: every few min: pending + stale?
+    SW->>Q: ...re-enqueue {submission_id}
+```
+
+**When Kafka (or a managed queue like SQS) would be the better pick:** if volume grows into hundreds of thousands of events per second, if several separate systems need to read the same event stream (analytics, search indexing, notifications), or if we need to replay history. Because the queue sits behind one interface, switching then is a new implementation, not a rewrite.
+
 #### Handling 1,000 bot requests per second (NFR-2)
 
 The idea is to accept requests fast and process them slowly. The queue absorbs the burst; each queue drains at the rate its downstream can take.
