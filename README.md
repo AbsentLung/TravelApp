@@ -28,6 +28,7 @@ Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a con
 - [ ] API design: compare variations and their trade-offs, then approve a final design
 - [ ] Clean up into a presentable `DESIGN.md` for others to read
 - [ ] Update `CLAUDE.md` (drafted in [PR #1](https://github.com/AbsentLung/TravelApp/pull/1)) so Claude stays on track and builds things the way we planned
+  - [ ] Include an absolute rule: Claude must **never** commit secrets (API keys, tokens, passwords, `.env` files) to the repo
 
 ## 3. Environment
 
