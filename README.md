@@ -6,6 +6,83 @@ This app is intended for broke backpackers to find gym trial hacks, and the chea
 At its core, it finds all nearby gyms with Open Street Maps. When you click on a gym, you can then ask a bot for details about costs, free trials, etc. and that data is then stored into a database.
 
 
+# Roadmap
+
+Each phase finishes before the next one starts, unless noted. Check items off as they're done.
+
+## 1. Requirements
+
+- [ ] List functional requirements
+- [ ] List non-functional requirements (performance, scale to thousands of users, cost, privacy, offline behavior)
+- [ ] List the riskiest unknowns (e.g. limits of whichever map/gym data source we pick, cost and hosting of the chatbot's LLM, moderating user-submitted gym data)
+- [ ] Ask Claude to research whether the requirements and unknowns are realistic
+- [ ] Decide what's in scope for beta / demos and what's saved for later
+
+## 2. Design
+
+Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a constraint going in.
+
+- [ ] High-level design: ask Claude for several options with pros and cons, debate until we land on the best one
+- [ ] Choose everything Expo doesn't cover, driven by the high-level design: where the backend runs (e.g. Expo API routes or a separate server), database, cache, hosting, the map and gym data source, and the chatbot's LLM
+- [ ] Database schema: ask Claude for several variations, debate until we land on the best one
+- [ ] API design: compare variations and their trade-offs, then approve a final design
+- [ ] Clean up into a presentable `DESIGN.md` for others to read
+- [ ] Update `CLAUDE.md` (drafted in [PR #1](https://github.com/AbsentLung/TravelApp/pull/1)) so Claude stays on track and builds things the way we planned
+  - [ ] Include an absolute rule: Claude must **never** commit secrets (API keys, tokens, passwords, `.env` files) to the repo
+
+## 3. Environment
+
+- [ ] Separate dev, staging and production setups, with secrets kept out of the repo
+- [ ] Local database and cache (whatever phase 2 picks) running via Docker, one command to start
+- [ ] Install packages
+- [ ] Linting, formatting and test frameworks (unit, integration, end-to-end) set up before any feature code
+- [ ] CI/CD pipelines (lint, type-check, tests on every PR; deploys per environment)
+- [ ] GitHub branch protection, so nothing merges without the required reviews and green checks
+- [ ] Automate the review bots on every PR: CodeRabbit, and the second Claude review via the Claude Code GitHub Action (`/install-github-app` in the Claude CLI sets it up)
+- [ ] Error tracking and logging
+
+## 4. Build
+
+Every section ships with unit, integration and automated tests, and runs on **web, Android and iOS** as it's built (Expo gives us all three from one codebase).
+
+Review gate for every section:
+- CodeRabbit approval
+- Second Claude approval
+- Human approval
+
+Parallel work: features that aren't tightly coupled to others are built in parallel with Orca, one Claude CLI per feature. Each Claude CLI opens its own pull request for its feature, which goes through the review gate on its own. Tightly coupled features are built one after another.
+
+Steps:
+- [ ] Walking skeleton, end to end: search a city → fetch nearby gyms from the chosen data source → cache them → show them on the map
+- [ ] Routing
+- [ ] Initial frontend and backend structure built out from the skeleton
+- [ ] Features (in parallel where they're independent, see above):
+  - [ ] The map
+  - [ ] Homepage
+  - [ ] Find by search
+  - [ ] Find by current location
+  - [ ] Filters
+  - [ ] Individual gym sidebar
+  - [ ] "Find More Gyms"
+  - [ ] Individual gym chatbot
+  - [ ] Anything else that came up in phases 1 and 2
+- [ ] Polish for mobile web, Android and iOS specifics
+
+## 5. Release
+
+- [ ] Start the Google Play closed test early (new personal accounts need 12 testers for 14 days before going public)
+- [ ] Buy an Apple Developer account ($99/year)
+- [ ] Write a privacy policy
+- [ ] Add OpenStreetMap attribution in the app (required by its license)
+- [ ] Prepare store listings (Google Play and App Store)
+- [ ] Buy the cheapest possible environment for a demo release on web and Android
+- [ ] Test everything thoroughly and keep fixing things until we're ready to leave beta
+- [ ] Once iOS is thoroughly tested, release the beta to the App Store
+- [ ] Confirm web, mobile web, Android and iOS all work correctly
+- [ ] Buy all resources needed for the full release
+- [ ] Deploy final versions
+
+
 # Welcome to your Expo app 👋
 
 This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
