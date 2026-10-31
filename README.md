@@ -18,6 +18,8 @@ Each phase finishes before the next one starts, unless noted. Check items off as
 - [x] Ask Claude to research whether the requirements and unknowns are realistic
 - [x] Decide what's in scope for beta / demos and what's saved for later
 
+> The full requirements are in [REQUIREMENTS.md](https://github.com/AbsentLung/TravelApp/blob/GymFinder/REQUIREMENTS.md) (on the GymFinder branch).
+
 ## 2. Design
 
 Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a constraint going in.
