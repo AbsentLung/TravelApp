@@ -23,7 +23,7 @@ Each phase finishes before the next one starts, unless noted. Check items off as
 Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a constraint going in.
 
 - [ ] High-level design: ask Claude for several options with pros and cons, debate until we land on the best one
-- [ ] Choose the rest of the stack, driven by the high-level design
+- [ ] Choose everything Expo doesn't cover, driven by the high-level design: where the backend runs (e.g. Expo API routes or a separate server), database, cache, hosting, the map and gym data source, and the chatbot's LLM
 - [ ] Database schema: ask Claude for several variations, debate until we land on the best one
 - [ ] API design: compare variations and their trade-offs, then approve a final design
 - [ ] Clean up into a presentable `DESIGN.md` for others to read
