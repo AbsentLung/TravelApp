@@ -48,8 +48,9 @@ Each requirement has an ID so later docs (`DESIGN.md`, PRs, tests) can point at 
 ### Adding and updating gyms
 
 - **FR-16** Logged-in users can request that a gym be added to the map, or that an existing gym's details be updated.
-- **FR-17** Each request is reviewed first by a bot, then by an admin. The change only goes live after admin approval.
+- **FR-17** Each request is reviewed first by a bot. If the bot can verify it (FR-24), it goes live without admin approval. Otherwise it waits for an admin to approve it.
 - **FR-18** Users can see the status of their requests (pending, approved, rejected).
+- **FR-24** A price change counts as bot-verified if the bot finds the new price on the gym's own website, or in a price menu that is less than a year old.
 
 ### Pre-seeding gym data
 
@@ -76,7 +77,7 @@ These are flags for the research step in phase 1, not changes to the requirement
 1. **Google Maps sweeps (FR-11) and its Terms of Service.** Google Maps' terms forbid scraping its data, and courts have sided with companies against scrapers before (see [Plan.md](./Plan.md)). This could get the app blocked or sued. Is there a licensed way to get the same result, or should sweeps be limited or dropped? OOS-1 raises the same question for Yandex and Baidu.
 2. **What is a "bot request" in NFR-2?** 10,000 daily users making, say, 20 requests each is about 2-3 requests per second on average, maybe 10-30 at peak. 1,000 per second is about 86 million a day, which is far more than 10k users would create. If it means chatbot messages, that rate of LLM calls would be very expensive, and well beyond a local model. If it means sweep requests to a map site, that rate would get blocked quickly. Which bot, and is 1,000/s a peak or a sustained rate?
 3. **"Every gym in the world" (FR-4).** Coverage can only be as good as the data sources plus user submissions. Is it acceptable that some regions start sparse?
-4. **Bot approval (FR-17).** What may the bot reject on its own (spam, duplicates, missing fields), and can it ever approve without an admin?
+4. **Bot approval (FR-17).** Price changes are covered by FR-24. What counts as bot-verified for other changes (a new gym, opening hours, category), and what may the bot reject on its own (spam, duplicates, missing fields)? How does the bot tell a price menu's date?
 5. **Chatbot sources (FR-8).** Where is the chatbot allowed to look up gym data (our database only, the gym's own website, the open web)? This affects cost, accuracy, and legal exposure.
 6. **Filter scope (FR-10).** Read here as "filter what's in the current map view". Should search also find gyms outside the view?
 7. **Which destinations to pre-seed (FR-20)?** Who picks the list, and how many cities? A fixed list we write ourselves is simplest; a ranking from published tourism data is more defensible. Pre-seeding should stick to sources we're allowed to store (see question 1).
