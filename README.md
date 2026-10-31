@@ -14,7 +14,7 @@ Each phase finishes before the next one starts, unless noted. Check items off as
 
 - [ ] List functional requirements
 - [ ] List non-functional requirements (performance, scale to thousands of users, cost, privacy, offline behavior)
-- [ ] List the riskiest unknowns (Overpass API rate limits, where Ollama runs, moderating user-submitted gym data, etc.)
+- [ ] List the riskiest unknowns (e.g. limits of whichever map/gym data source we pick, cost and hosting of the chatbot's LLM, moderating user-submitted gym data)
 - [ ] Ask Claude to research whether the requirements and unknowns are realistic
 - [ ] Decide what's in scope for beta / demos and what's saved for later
 
@@ -32,12 +32,12 @@ Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a con
 ## 3. Environment
 
 - [ ] Separate dev, staging and production setups, with secrets kept out of the repo
-- [ ] Local Postgres + PostGIS + Redis via Docker (one command to start)
+- [ ] Local database and cache (whatever phase 2 picks) running via Docker, one command to start
 - [ ] Install packages
 - [ ] Linting, formatting and test frameworks (unit, integration, end-to-end) set up before any feature code
 - [ ] CI/CD pipelines (lint, type-check, tests on every PR; deploys per environment)
 - [ ] GitHub branch protection, so nothing merges without the required reviews and green checks
-- [ ] Error tracking and logging (e.g. Sentry free tier)
+- [ ] Error tracking and logging
 
 ## 4. Build
 
@@ -49,7 +49,7 @@ Review gate for every section:
 - Human approval
 
 Steps:
-- [ ] Walking skeleton, end to end: search a city → fetch gyms from Overpass → cache by geohash cell in Postgres/Redis → show them on the map
+- [ ] Walking skeleton, end to end: search a city → fetch nearby gyms from the chosen data source → cache them → show them on the map
 - [ ] Routing
 - [ ] Initial frontend and backend structure built out from the skeleton
 - [ ] Features, one at a time:
