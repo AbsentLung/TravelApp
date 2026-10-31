@@ -36,7 +36,7 @@ Each requirement has an ID so later docs (`DESIGN.md`, PRs, tests) can point at 
 
 - **FR-11** Beyond free data sources, a user can request that a bot sweeps an area on Google Maps to find gyms that are missing from the map.
 - **FR-12** Gyms found by a sweep go through the same approval flow as user submissions (FR-16, FR-17).
-- **FR-22** Sweep requests require a signed-in user. Each request and its status (pending, completed, failed) is saved, and shown on the same page as the user's add/update gym requests (FR-18).
+- **FR-22** If the user is signed in, each sweep request and its status (pending, completed, failed) is saved, and shown on the same page as their add/update gym requests (FR-18).
 - **FR-23** Users are told when their sweep request fails.
 
 ### Accounts and roles
