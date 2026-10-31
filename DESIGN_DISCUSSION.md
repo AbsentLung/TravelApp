@@ -70,7 +70,7 @@ flowchart TB
 - A crash in a sweep takes down the whole app.
 - Doesn't meet NFR-4 ("scale without a rewrite") well: getting out of it later means pulling background work out anyway.
 
-### Option B: Modular monolith API + background workers via a queue
+### Option B: Modular monolith API + background workers via a queue (chosen)
 
 Same single codebase, but deployed as two kinds of process. The **API** only does fast things (reads, auth, accepting requests). Anything slow (chat replies, sweeps, bot review, Overpass refresh, coverage job) becomes a **job on a queue** that **workers** pick up. Redis does double duty as cache and queue. The app gets results by polling or a push/stream.
 
@@ -399,7 +399,10 @@ flowchart TB
     WS --> PG
 ```
 
-## 6. Recommendation: Option B
+## 6. Decision: Option B
+
+**Decided by Joey (2026-10-31):** Option B. It avoids the extra resource costs microservices would bring, costs the same as A in demo mode, and keeps everything scalable.
+
 
 Option B keeps the simplicity of one codebase but separates the two kinds of work that actually behave differently. It's a short step from the demo code (move slow handlers into job processors), uses the pieces already agreed on, and every scaling move later is "add more copies" rather than a rewrite. Option A is a fine *first deploy* of B's code (run the worker in the same process), but the queue boundary should be in the code from day one.
 
@@ -559,9 +562,9 @@ Settled in PR review:
 - **LLM:** Ollama in demo mode, Claude in scale mode, switched by config.
 - **Two modes:** a near-free demo mode and a high-scale mode, switchable by config without code changes (section 6.1).
 - **FR-4:** coverage grows with use.
+- **Architecture:** Option B, modular monolith API + background workers via a queue.
 
 Still needed from Joey:
 1. **Seeded gyms and approval:** can pre-release seed results skip per-gym admin approval (bot review + admin spot checks), or must every one go through FR-17?
-2. **Pick the architecture** (recommended: B) and the building blocks in section 5 (Postgres+PostGIS, caches at client/CDN/Redis, Redis queues to start, Kafka only if volume demands it).
 
 Once this is settled, the next docs are stack choices, then schema, then API.
