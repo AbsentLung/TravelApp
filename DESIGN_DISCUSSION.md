@@ -243,7 +243,7 @@ flowchart LR
 - ❌ No joins, limited transactions; the approval flow needs careful design.
 - ❌ Built for millions of requests per second, which this app won't have. All of the cost of that scale, none of the benefit.
 
-**Verdict:** PostgreSQL + PostGIS. The data is geographic and relational, the size fits one server, and JSONB covers the "flexible fields" argument that usually favours NoSQL. NoSQL would win if we had huge write volume or no relations, and we have neither.
+**Verdict (decided by Joey, 2026-10-31):** PostgreSQL + PostGIS. The data is geographic and relational, the size fits one server, and JSONB covers the "flexible fields" argument that usually favours NoSQL. NoSQL would win if we had huge write volume or no relations, and we have neither.
 
 ### 5.2 Caching: where should caches go?
 
@@ -563,6 +563,7 @@ Settled in PR review:
 - **Two modes:** a near-free demo mode and a high-scale mode, switchable by config without code changes (section 6.1).
 - **FR-4:** coverage grows with use.
 - **Architecture:** Option B, modular monolith API + background workers via a queue.
+- **Database:** PostgreSQL + PostGIS (section 5.1).
 
 Still needed from Joey:
 1. **Seeded gyms and approval:** can pre-release seed results skip per-gym admin approval (bot review + admin spot checks), or must every one go through FR-17?
