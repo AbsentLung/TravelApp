@@ -52,6 +52,8 @@ The design needs one queue interface with a Postgres-backed implementation (demo
 | **pg-boss + BullMQ** | pg-boss (Postgres) | BullMQ (Redis) | Both mature, both have retries, delays, cron schedules, priorities. BullMQ adds per-queue rate limits and job-ID dedupe, which sweeps need. | Two libraries to wrap behind one interface; features differ slightly (we use the overlap). |
 | pg-boss everywhere | pg-boss | pg-boss | One library, no Redis needed for queues at all; jobs can be created in the same transaction as the request row. | Adds load to the main database; lower ceiling than Redis. Fine at 10k DAU, weaker near NFR-2's 1,000/s. |
 | graphile-worker + BullMQ | graphile-worker | BullMQ | graphile-worker is very fast for a Postgres queue. | Smaller feature set than pg-boss (no built-in priorities per queue in the same way). |
+| pg-boss + RabbitMQ | pg-boss | RabbitMQ (self-run, or Amazon MQ) | A real message broker: durable queues, acknowledgements, flexible routing, very reliable. | Delayed jobs need a plugin; no built-in per-queue rate limit, priorities are limited, no "skip if this job ID is already queued" dedupe, which sweeps rely on. One more service to run (Amazon MQ's smallest broker is a fixed monthly fee), while Redis is already there for the cache. |
+| pg-boss + Kafka | pg-boss | Kafka (self-run, or Amazon MSK) | Handles millions of messages per second; stores and replays history; many consumers can read the same stream. | It's an event log, not a job queue: retries, delays, rate limits and dedupe all have to be built by us. Heavy to run (a cluster, or MSK at a few hundred dollars a month). 1,000 jobs/s is a tiny fraction of what it's for. Compared in detail in DESIGN_DISCUSSION.md section 5.3. |
 | pg-boss + Amazon SQS | pg-boss | SQS | Fully managed, no Redis to run, "very AWS". | No built-in rate limiting or job priorities; delays capped at 15 min; dedupe only on FIFO queues for 5 minutes. We'd rebuild what BullMQ gives for free. |
 
 ```mermaid
@@ -60,6 +62,8 @@ flowchart LR
     QI -->|MODE=demo| PB[PgBossQueue<br/>tables in Postgres]
     QI -->|MODE=scale| BQ[BullMqQueue<br/>ElastiCache Redis]
 ```
+
+**Why not Kafka or RabbitMQ (Joey's question).** Both are good, but they solve problems we don't have yet. Our work is *jobs* (sweep this tile, answer this chat) that need retries, delays, priorities, a per-source rate limit and duplicate merging. BullMQ has all five built in; RabbitMQ has about two of them and Kafka none, so we'd write the rest ourselves. BullMQ also runs on the Redis we already need for caching, so there's no extra service to pay for. Because the queue sits behind one interface, a RabbitMQ or Kafka implementation can be added later without touching business code: Kafka if we need several systems reading the same event stream, RabbitMQ if we need complex routing between many services.
 
 **Recommendation: pg-boss in demo mode, BullMQ in scale mode.** This matches the agreed design (Redis in scale mode, Postgres table in demo mode). The interface only exposes what both support: `add(queue, payload, {priority, delay, jobId})`, `process(queue, handler, {concurrency})`, `schedule(cron)`. The per-source rate limiter (don't hammer Google Maps) lives in our own small module, backed by Postgres in demo and Redis in scale, so it works the same either way.
 
@@ -141,7 +145,7 @@ flowchart TB
     EC --> WC[ECS Fargate: chat + bot-review workers<br/>scale on queue depth]
     EC --> WS[ECS Fargate: sweep workers<br/>Playwright, capped count]
     WC --> CL[Claude API<br/>direct or via Amazon Bedrock]
-    WS --> SRC[Overpass, Google Maps scraper,<br/>optional proxy service]
+    WS --> SRC[Overpass, Google Maps scraper<br/>no paid proxies]
     WC & WS --> RDS
     CW[CloudWatch metric:<br/>queue depth] -. drives autoscaling .-> WC & WS
 ```
@@ -164,7 +168,7 @@ Two different kinds of "tiles" are involved:
 - **Base map tiles**: the streets and land picture under the gyms.
 - **Gym data tiles**: our geohash cells of gym JSON (agreed design).
 
-Today the app uses Leaflet on web and Leaflet inside a WebView on Android/iOS, with base tiles from `tile.openstreetmap.org`. **The public OSM tile servers' usage policy forbids heavy app traffic**, so that has to change before launch regardless.
+Today (vibe-coded demo, same code on `GymFinder` and `GymFinderVibeCoded`) the app uses **Leaflet**: `react-leaflet` on web (`gym-map-screen.web.tsx`) and Leaflet inside a WebView on Android/iOS (`leaflet-webview-html.ts`), with raster base tiles from `tile.openstreetmap.org`. **The public OSM tile servers' usage policy forbids heavy app traffic**, so that has to change before launch regardless.
 
 | Variation | Pros | Cons |
 |---|---|---|
@@ -196,9 +200,7 @@ Decided in PR #6: sweeps scrape Google Maps, behind the pluggable source interfa
 | **Playwright + headless Chromium inside the sweep worker container** | Already used by the demo; one image; shares the queue and rate limiter. | Chromium needs ~1 GB RAM per browser, so sweep workers are bigger containers with a low max count. |
 | A separate scraping service / Lambda | Isolated from other workers. | Lambda + Chromium is fiddly (size limits); not needed with a capped worker pool. |
 | Paid scraping API (handles proxies and blocks for you) | Least work, fewer blocks. | Per-request fees. |
-| **Rotating residential proxies** added to Playwright | Fewer blocks than AWS IPs, which Google recognises as datacenter traffic. | Monthly fee; only worth it once blocks actually happen. |
-
-**Recommendation: Playwright in the sweep worker, slow shared rate limit, no proxy at first.** Add a proxy provider through config only if AWS IPs get blocked.
+**Decided by Joey (2026-11-01): Playwright in the sweep worker, and never pay for proxies or scraping APIs.** If Google starts blocking our AWS IPs, the sweep workers back off (slower rate, longer pauses) and mark affected sweeps `failed` so users are told. Gyms keep arriving from Overpass and user submissions in the meantime.
 
 ### 1.10 Stack summary
 
@@ -213,7 +215,7 @@ Decided in PR #6: sweeps scrape Google Maps, behind the pluggable source interfa
 | LLM | Ollama on Joey's PC via tunnel (demo); Claude via API or Bedrock (scale) |
 | Map | MapLibre + Protomaps on S3/CloudFront |
 | Results to app | Polling, SSE for chat, Expo push for status changes |
-| Scraper | Playwright in sweep workers, proxy only if blocked |
+| Scraper | Playwright in sweep workers, never paid proxies (decided) |
 
 ---
 
@@ -256,7 +258,6 @@ erDiagram
         text_array categories
         bool accepts_drop_in
         bool has_trial
-        int day_pass_usd_cents "current, denormalized"
         jsonb details "hours, amenities, ..."
         tsvector search "generated"
         text status "active | closed | hidden"
@@ -268,11 +269,11 @@ erDiagram
         int amount_minor
         char3 currency
         int usd_cents
-        text source_kind "gym_website | price_menu | user | chat | scrape"
+        text source_kind "gym_website | price_menu | user | chat"
         text source_url
-        date observed_on
+        date menu_posted_on "Google Maps photo date"
+        timestamptz last_seen_at
         text verified_by "bot | admin | null"
-        bool is_current
     }
     gym_source_refs {
         bigint gym_id FK
@@ -296,7 +297,7 @@ erDiagram
         bigint request_id FK
         bigint gym_id FK "null for a new gym"
         jsonb proposed
-        jsonb evidence "source_kind, url, observed_on"
+        jsonb evidence "source_kind, url, menu_posted_on"
         text review_status "pending_bot | awaiting_admin | approved | rejected"
         text decided_by "bot | admin"
     }
@@ -329,7 +330,15 @@ The sections below are the choices behind this diagram, each with variations.
 | **`geometry(Point, 4326)` + GIST index**, plus a generated `geohash5` column | Fast "in this tile / box" queries; `ST_GeoHash` gives the tile key; distance in metres by casting to `geography` when needed. | Needs PostGIS (available on RDS and in the `postgis/postgis` Docker image). |
 | `geography(Point)` | Distances in metres natively. | Fewer functions and slower for box queries, which are our main query. |
 
-**Recommendation: `geometry(Point, 4326)` + GIST, plus a stored `geohash5 = ST_GeoHash(location, 5)` column with a b-tree index.** Loading a tile becomes `WHERE geohash5 = $1`, which is about as cheap as a query gets, and it's the same key the CDN and Redis cache by.
+**Why not R-trees (Joey's question)? We are using one.** A PostGIS GIST index *is* an R-tree: Postgres builds it as an R-tree over each gym's bounding box (implemented on GiST, Postgres's general index framework). Queries like "gyms inside this rectangle" or "gyms within 50 m" use it. The geohash column is not instead of the R-tree; it's an extra, cheaper key for the one query we run most (load a whole tile), and it's the same key the CDN and Redis cache by.
+
+| | R-tree (GIST) | Geohash column (b-tree) |
+|---|---|---|
+| Used for | Any shape: map rectangle, radius, nearest, dedupe within 50 m | Exactly one tile |
+| Speed for "load tile X" | Fast | Fastest (exact match) |
+| Matches cache keys | No | Yes |
+
+**Recommendation: `geometry(Point, 4326)` + GIST (R-tree), plus a stored `geohash5 = ST_GeoHash(location, 5)` column with a b-tree index.** Loading a tile becomes `WHERE geohash5 = $1`, which is about as cheap as a query gets, and it's the same key the CDN and Redis cache by.
 
 ### 2.4 Tile size (geohash precision)
 
@@ -353,26 +362,29 @@ The sections below are the choices behind this diagram, each with variations.
 
 ### 2.6 Prices and the verification rule
 
-The approval rule needs to know **where** each price came from and **when** it was seen.
+**Decided by Joey (2026-11-01): no price history.** Keep only the current price, plus **when it was last seen**. The approval rule needs to know **where** each price came from, and for price menus **when the photo was posted**.
+
+**Decided by Joey (2026-11-01): how prices are verified.**
+- **Price found on the web** (the gym's own website): verified, no date check needed.
+- **Price menu photo on Google Maps:** verified if the photo was **posted on Google Maps less than a year ago**. The scraper reads the photo's posted date from Google Maps.
+- **Anything else** (a user's claim, a chat answer without a source): goes to an admin.
 
 | Variation | Pros | Cons |
 |---|---|---|
-| Price columns on `gyms` (today: `day_pass_price_cents`, ...) | Simple, fast filters. | No source or date, so the "under a year old" rule can't be checked. No history. One currency only. |
-| **`gym_prices` table** (one row per observed price: kind, amount, currency, `usd_cents`, `source_kind`, `source_url`, `observed_on`, `verified_by`, `is_current`) **plus current values copied onto `gyms`** | Full evidence for the rule. History of price changes. Original currency kept, USD snapshot for sorting. Map filters stay on the `gyms` row (no join per tile). | The copy on `gyms` must be updated when a price is approved (done in the same transaction). |
-| `gym_prices` only, map filters join it | No duplicated data. | Every tile load joins and picks the latest price per gym; slower and more complex. |
+| Price columns on `gyms` (today: `day_pass_price_cents`, ...) plus `unverified_gym_data` | Simple. | No source, URL or dates, so the rule can't be checked or audited. One currency. Adding source + date + last seen for 4 price kinds means ~20 columns on `gyms`. |
+| **`gym_prices` table with one row per gym per price kind** (unique `(gym_id, kind)`): amount, currency, `usd_cents`, `source_kind`, `source_url`, `menu_posted_on`, `last_seen_at`, `verified_by`. Overwritten when a newer price is approved. | Exactly "current price + when last seen + where from", no history. Handles any currency. Adding a new price kind (e.g. 10-visit pass) is a row, not a column. | Map filters join it (one indexed join; or copy `has_day_pass` / cheapest price onto `gyms` if tile queries get slow). |
 
-**Recommendation: `gym_prices` history + current values copied onto `gyms` when approved.** The verification rule then reads straight from the evidence:
+**Recommendation: `gym_prices`, one row per gym per kind, no history.** When the scraper sees the same price again, it only bumps `last_seen_at`. The old row's details stay in `gym_changes` (section 2.10) as the audit trail of what was approved, so we still know who changed what without a history table.
 
 ```mermaid
 flowchart TD
-    C[Proposed price change] --> W{source_kind =<br/>gym_website?}
-    W -->|yes, bot found it there| A[Auto-approve<br/>verified_by = bot]
-    W -->|no| M{source_kind = price_menu<br/>AND observed_on &gt;<br/>today - 1 year?}
+    C[Proposed price] --> W{source_kind =<br/>gym_website?}
+    W -->|yes| A[Auto-approve<br/>verified_by = bot]
+    W -->|no| M{source_kind = price_menu<br/>AND menu_posted_on on Google Maps<br/>within the last year?}
     M -->|yes| A
     M -->|no| AD[awaiting_admin]
+    A --> U[Upsert gym_prices row,<br/>last_seen_at = now]
 ```
-
-**Open sub-question for Joey:** for a price menu, what proves its date? Options: (a) a date printed on the menu that the bot reads, (b) photo metadata / upload date, (c) the date the user claims. Recommendation: (a) or (b); a user's claim alone goes to an admin.
 
 ### 2.7 Flexible gym details
 
@@ -444,7 +456,7 @@ Review lifecycle of a `gym_changes` row, including the approval rule:
 ```mermaid
 stateDiagram-v2
     [*] --> pending_bot
-    pending_bot --> approved: bot verifies<br/>(gym verified, or price from website / menu < 1 year)
+    pending_bot --> approved: bot verifies<br/>(gym verified, or price from website /<br/>Google Maps menu photo posted < 1 year ago)
     pending_bot --> rejected: bot rejects junk / duplicate
     pending_bot --> awaiting_admin: not verifiable
     awaiting_admin --> approved: admin
@@ -489,29 +501,41 @@ Gyms without an external ID (user-submitted) are matched by distance + name simi
 
 ### 2.14 Migrating from today's demo schema
 
-The demo `db/schema.sql` is a hand-made dump. The plan is a fresh Drizzle schema plus a one-off script that copies demo gyms over: `lat/lng` → `location`, `osm_id` → `gym_source_refs`, price columns → `gym_prices` rows (`source_kind = 'scrape'` or `'osm'`, unverified), `gym_categories` → `categories[]`, `admins` → `users.role`. Demo reviews come along with `user_id` left empty.
+The demo `db/schema.sql` is a hand-made dump. The plan is a fresh Drizzle schema plus a one-off script that copies demo gyms over: `lat/lng` → `location`, `osm_id` → `gym_source_refs`, price columns and `unverified_gym_data` → `gym_prices` rows (unverified, `last_seen_at` = the old `scraped_at`), `gym_categories` → `categories[]`, `admins` → `users.role`, `gym_submissions` → `requests` + `gym_changes`, `fetched_areas` / `scanned_areas` → `tile_fetches`. Demo reviews come along with `user_id` left empty.
+
+### 2.15 How different is this from the vibe-coded database?
+
+Moderately. It's still one Postgres database and the core `gyms`, `users` and `reviews` tables keep their meaning. What changes is mostly **how** things are stored, so the queue, tiles and verification rule can work.
+
+| Vibe-coded table / column | New schema | Change |
+|---|---|---|
+| `gyms.lat`, `gyms.lng` | `gyms.location` (PostGIS point) + `geohash5` | Bigger: enables the R-tree index and tile keys |
+| `gyms.osm_id` | `gym_source_refs` | Medium: any number of sources (OSM, Google Maps, ...) |
+| `gyms.day/week/month_pass_price_cents`, `unverified_gym_data` | `gym_prices` (one row per kind, source + dates) | Medium: needed for the verification rule |
+| `gyms.data_source` enum (osm / bot_verified / admin_verified) | `gym_prices.verified_by` + `gym_changes.decided_by` | Small: verification tracked per fact, not per gym |
+| `categories` + `gym_categories` | `gyms.categories text[]` | Small |
+| `fetched_areas`, `scanned_areas` (bounding boxes) | `tile_fetches` (geohash + source) | Medium: fixed tiles instead of overlapping boxes |
+| `gym_submissions` + `gym_submission_statuses` | `requests` + `gym_changes` | Bigger: adds job status (pending / completed / failed, deadline) for "My requests" and sweeps |
+| `admins` | `users.role` | Small |
+| `users` (own bcrypt) | Better Auth's `users` / `session` / `account` | Medium: auth library owns these tables |
+| `reviews` | `reviews` + `user_id` | Small |
+| (none) | pg-boss tables in their own `pgboss` schema | New, managed by the library |
+
+Nothing in the vibe-coded data is lost: section 2.14's one-off script copies it across.
 
 ---
 
-## 3. Decisions needed from Joey
+## 3. Decisions
 
-Recommendations in bold. Each can be changed in review.
+**Decided by Joey (2026-11-01):**
+- Accepted as recommended: backend (1.1), DB access (1.3), auth (1.4), demo hosting (1.5), Ollama on Joey's PC (1.5), scale hosting (1.6), results to the app (1.8), tile size and location (2.3, 2.4), requests + `gym_changes` (2.10), and the smaller schema items (2.7, 2.8, 2.9, 2.11, 2.12, 2.13).
+- **Scraper (1.9):** Playwright in sweep workers; never pay for proxies.
+- **Prices (2.6):** no price history; one current price per kind with `last_seen_at`.
+- **Price verification (2.6):** web prices are verified with no date check; a price menu counts if its photo was posted on Google Maps less than a year ago.
 
-**Stack**
-1. Backend: **TypeScript + Fastify, monorepo with shared types**, or stay on Express?
-2. Queue: **pg-boss (demo) + BullMQ on Redis (scale)**, or SQS for scale?
-3. DB access: **Drizzle**, or Prisma / Kysely?
-4. Auth: **Better Auth (users in our Postgres)**, or Cognito?
-5. Demo hosting: **Lightsail 4 GB + Docker Compose + S3/CloudFront** (~$24/month), or EC2 + RDS (~$30–45)?
-6. Ollama in demo: **Joey's PC through a tunnel**, small CPU model on the box, or a GPU instance (~$400+/month)?
-7. Scale hosting: **ECS Fargate + RDS + ElastiCache, built with CDK**?
-8. Map: **MapLibre + Protomaps on S3**, or keep Leaflet with a paid tile provider?
-9. Scraper: **Playwright in sweep workers, proxies only if blocked**?
+**Still open (answered questions, waiting for Joey's OK):**
+1. **Queue (1.2):** Joey asked why not Kafka or RabbitMQ. Answer in section 1.2: they lack built-in job features we need and add a service to run. Recommendation unchanged: **pg-boss (demo) + BullMQ (scale)**.
+2. **Map (1.7):** the vibe-coded app uses Leaflet with the public OSM tile servers. Recommendation unchanged: **MapLibre + self-hosted Protomaps**.
+3. **R-trees (2.3):** the recommended GIST index is an R-tree, so no change needed.
 
-**Schema**
-10. Gym location: **PostGIS point + generated `geohash5`**, and tile size **precision 5** with a minimum zoom of about 11?
-11. Prices: **`gym_prices` history with source + date, current values copied to `gyms`**? And how a price menu's date is proven (**printed date or photo date; a user's claim alone goes to an admin**)?
-12. Requests: **Variation B, `requests` + `gym_changes`**?
-13. Smaller ones, fine to accept as a group: hybrid columns + JSONB details, `text[]` categories, Postgres full-text search, `gym_source_refs`, `role` column, `bigint` IDs.
-
-Once these are settled, the next doc is the API (endpoints, tile URLs and cache headers, request polling).
+Once these are confirmed, the next doc is the API (endpoints, tile URLs and cache headers, request polling).
