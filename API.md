@@ -30,10 +30,10 @@ Anything that goes through a queue (sweeps, chat, bot review) can't answer in th
 |---|---|---|
 | Wait for the job inside the request | Simple client code. | Holds a connection open for seconds to minutes; mobile networks and the load balancer time out; exactly what the queue design avoids. |
 | **Return `202 Accepted` with a request ID, then the app polls `GET /v1/requests/{id}`** | Works through CloudFront and the load balancer; stateless; the same pattern for every kind of slow job; the request row is already in Postgres, so polling is a cheap lookup. | A few seconds of delay; extra small requests. |
-| Same, plus **Server-Sent Events** on `GET /v1/requests/{id}/events` | Chat answers can appear word by word. | Needs pub/sub between worker and API (Postgres `LISTEN/NOTIFY` in demo, Redis in scale). |
+| Same, plus **Server-Sent Events** on `GET /v1/chats/{chatId}/events` | Chat answers can appear word by word. | Needs pub/sub between worker and API (Postgres `LISTEN/NOTIFY` in demo, Redis in scale). |
 | WebSockets | Real-time both ways. | We don't need two-way; more infrastructure. |
 
-**Recommendation: `202` + request ID + polling for everything now. SSE for chat is a later add-on on the same request ID, so it needs no new endpoints.** Polling uses a short backoff: every 1 s for chat, every 5 s for sweeps, and stop when the screen closes. "My requests" also gets Expo push notifications when a status changes (section 2.7).
+**Recommendation: `202` + request ID + polling for everything now. SSE for chat is a later add-on on the same chat ID.** Polling uses a short backoff: every 1 s for chat, every 5 s for sweeps, and stop when the screen closes. "My requests" also gets Expo push notifications when a status changes (section 2.7).
 
 ```mermaid
 sequenceDiagram
@@ -42,29 +42,51 @@ sequenceDiagram
     participant PG as Postgres
     participant Q as Queue
     participant W as Worker
-    App->>API: POST /v1/gyms/42/chat {question}
+    App->>API: POST /v1/gyms/42/changes {proposed update}
     API->>PG: INSERT requests (pending, deadline)
     API->>Q: enqueue {requestId}
     API-->>App: 202 {requestId, status: pending}
-    W->>Q: take job
-    W->>PG: status = completed, result = {answer}
+    W->>Q: take job (bot review)
+    W->>PG: status = completed / failed
     loop until completed or failed
         App->>API: GET /v1/requests/{id}
         API-->>App: {status, result?}
     end
 ```
 
-### 1.4 How the app identifies itself
+### 1.4 Chats are temporary
 
-Browsing and chat don't need an account (FR-15), but a signed-out user still has to be able to read back *their own* chat answer and nobody else's.
+**Decided by Joey (2026-11-02): chats are not stored.** No chat question or answer is written to Postgres, chats never appear on "My requests", and there is no chat history on the server. The chat lives only on the user's screen; closing the gym's details clears it.
 
-| Variation | Pros | Cons |
-|---|---|---|
-| Request IDs alone (anyone with the ID can read it) | Simplest. | IDs are sequential bigints, so anyone could read other people's chats by counting. |
-| **Signed in: Better Auth session. Signed out: a random device ID** the app makes once (UUID, kept in SecureStore / localStorage) and sends as `X-Device-Id`. A request is readable only by its user, or by the device that made it. | No account needed for chat; can't guess other people's requests; when the user signs in, the device's recent requests can be attached to the account so they appear in "My requests". | A device ID is not proof of identity, so it only guards low-value data (chat questions about public gyms). Anything that changes data still needs sign-in. |
-| Better Auth anonymous users | A real session for everyone. | Creates a user row for every visitor, most of whom never come back. |
+How a chat still goes through the queue without being stored:
 
-**Recommendation: Better Auth sessions for signed-in users, `X-Device-Id` for signed-out ones.** Sessions use a cookie on web and the Better Auth Expo client's stored token on mobile; the server code is the same.
+```mermaid
+sequenceDiagram
+    participant App
+    participant API
+    participant C as Cache<br/>(memory in demo, Redis in scale)
+    participant Q as Queue
+    participant W as Chat worker
+    App->>API: POST /v1/gyms/42/chat {question, recent messages}
+    API->>C: chat:{random id} = pending (expires in 15 min)
+    API->>Q: enqueue {chatId, gymId, question, recent messages}
+    API-->>App: 202 {chatId}
+    W->>Q: take job
+    W->>C: chat:{id} = {answer} (still expires in 15 min)
+    loop every ~1 s until answered, failed or expired
+        App->>API: GET /v1/chats/{chatId}
+        API-->>App: {status, answer?}
+    end
+```
+
+- **Chat IDs are random UUIDs**, not database IDs, so nobody can guess someone else's chat. Knowing the ID is what lets the app read the answer, so no device ID or account is needed (FR-15).
+- **Follow-up questions:** the server keeps no conversation, so the app sends the last few messages with each question as context.
+- **Queue jobs are deleted when done.** The chat queue is set to keep no history of finished jobs (pg-boss in demo mode stores jobs in Postgres, so this matters there).
+- **Failures:** a failed or expired chat shows an error with a Retry button on the same screen, which simply asks again.
+- **Saving facts (FR-9) is still allowed:** when an answer contains a useful fact (a price, a trial offer), the worker proposes it as a `gym_change` with its source, which goes through the normal review. Only the fact and its source are kept, never the conversation.
+- **Logs:** chat text is not written to server logs either; logs record only the gym ID, timing and outcome.
+
+Signed-in users use a Better Auth session: a cookie on web and the Better Auth Expo client's stored token on mobile, with the same server code.
 
 ### 1.5 Tiles and caching
 
@@ -99,7 +121,7 @@ Stale tiles: if a tile has never been fetched from Overpass, or the fetch is old
 | Field names | camelCase in JSON, snake_case in the database (Drizzle maps them). |
 | Lists | Cursor pagination: `?limit=20&cursor=...` → `{ items, nextCursor }`. Offsets break when rows are added while scrolling. |
 | Errors | `{ "error": { "code": "rate_limited", "message": "...", "details": {...} } }` with the right HTTP status: 400 validation, 401 not signed in, 403 not allowed, 404, 409 conflict/duplicate, 429 rate limited (with `Retry-After`), 500. `code` is a stable string the app can switch on; `message` is for humans. |
-| Rate limits | Per user, or per device + IP when signed out, using `@fastify/rate-limit` (memory store in demo mode, Redis in scale mode, behind the cache interface). Tight limits on sweeps and chat, loose on reads. |
+| Rate limits | Per user, or per IP when signed out, using `@fastify/rate-limit` (memory store in demo mode, Redis in scale mode, behind the cache interface). Tight limits on sweeps and chat, loose on reads. |
 | Validation | Every body, query and path parameter has a Zod schema; unknown fields are rejected. |
 | Health | `GET /healthz` (process up) and `GET /readyz` (database and queue reachable) for the load balancer and Docker. Not under `/v1`. |
 
@@ -117,14 +139,16 @@ Stale tiles: if a tile has never been fetched from Overpass, or the fetch is old
 flowchart LR
     App([Expo app]) --> PUB[Public reads<br/>tiles, gym details,<br/>reviews, search]
     App --> AUTH[Auth<br/>Better Auth routes]
-    App --> REQ[Requests<br/>chat, sweeps,<br/>add / update gym]
+    App --> CHAT[Chat<br/>temporary, not stored]
+    App --> REQ[Requests<br/>sweeps,<br/>add / update gym]
     App --> ME[Me<br/>my requests,<br/>push tokens]
     Admin([Admin screen]) --> ADM[Admin<br/>review queue,<br/>roles]
     PUB --> CDN{{cacheable at CDN}}
     REQ --> Q[[Queue]]
+    CHAT --> Q
 ```
 
-Legend: 🌐 public, no sign-in · 📱 signed in or device ID · 🔒 signed in · 🛡️ admin only.
+Legend: 🌐 public, no sign-in · 🔑 anyone holding the random chat ID · 🔒 signed in · 🛡️ admin only.
 
 ### 2.1 Auth (FR-13, FR-14)
 
@@ -138,8 +162,6 @@ Handled by Better Auth, mounted at `/v1/auth/*`. We don't write these routes our
 | POST | `/v1/auth/sign-out` | 🔒 | |
 | GET | `/v1/auth/get-session` | 🔒 | Current user, including `role`. |
 | POST | `/v1/auth/forget-password`, `/v1/auth/reset-password` | 🌐 | |
-
-On first sign-in, requests made earlier with the same `X-Device-Id` are attached to the account (section 1.4).
 
 ### 2.2 Map tiles (FR-4, FR-5)
 
@@ -212,14 +234,14 @@ Gym details response:
 
 `openingHours` uses the OSM `opening_hours` format, which the app parses for "open now".
 
-### 2.4 Requests: one shape for all slow or reviewed work (FR-8, FR-11, FR-16, FR-18)
+### 2.4 Requests: one shape for sweeps and gym changes (FR-11, FR-16, FR-18)
 
 Every endpoint below creates a row in `requests` (STACK_AND_SCHEMA.md 2.10) and returns **`202`** with the request:
 
 ```json
 {
   "id": "88231",
-  "kind": "chat",
+  "kind": "sweep",
   "status": "pending",
   "createdAt": "2026-11-02T10:00:00Z",
   "deadline": "2026-11-02T10:02:00Z",
@@ -233,33 +255,41 @@ How requests are created, endpoint by endpoint or through one generic endpoint:
 
 | Variation | Pros | Cons |
 |---|---|---|
-| One generic `POST /v1/requests { kind, ... }` | One route. | The body shape depends on `kind`, so validation and docs get murky; permissions differ per kind (chat is public, add-gym needs sign-in) and end up as if-statements. |
-| **One endpoint per action**, all returning the same request shape | Each route has its own clear schema and permission; URLs read naturally (`POST /v1/gyms/42/chat`). Reading status is still one generic endpoint. | More routes (each is small). |
+| One generic `POST /v1/requests { kind, ... }` | One route. | The body shape depends on `kind`, so validation and docs get murky; permissions and limits differ per kind and end up as if-statements. |
+| **One endpoint per action**, all returning the same request shape | Each route has its own clear schema and permission; URLs read naturally (`POST /v1/gyms/42/changes`). Reading status is still one generic endpoint. | More routes (each is small). |
 
 **Recommendation: one endpoint per action, one shared request shape and status endpoint.**
 
 | Method | Path | Who | Body | What happens |
 |---|---|---|---|---|
-| POST | `/v1/gyms/{id}/chat` | 📱 | `{ question }` | Chat job (FR-8). `result: { answer, sources[] }`. Facts worth saving become `gym_changes` (FR-9) and go through review. |
 | POST | `/v1/sweeps` | 🔒 | `{ geohash }` or `{ bbox }` (split into geohash5 tiles, capped count) | Sweep job per tile (FR-11). A tile swept recently returns `200` with an already-`completed` request; a tile already queued attaches to the existing job (same request returned). `result: { gymsFound, gymsNew }`. |
 | POST | `/v1/gyms` | 🔒 | Proposed new gym: name, location, categories, prices with `sourceKind` / `sourceUrl` / `menuPostedOn`, ... | Add-gym request (FR-16). One `gym_changes` row, then bot review. |
 | POST | `/v1/gyms/{id}/changes` | 🔒 | Partial update with evidence for any price | Update-gym request (FR-16). |
-| GET | `/v1/requests/{id}` | 📱 | | Current status (polling). Readable by the user or device that made it, or an admin. |
-| POST | `/v1/requests/{id}/retry` | 📱 | | Only for `failed` requests: creates a new request with the same input and returns it. |
-| GET | `/v1/requests/{id}/events` | 📱 | | *(Later)* SSE stream for chat. |
+| GET | `/v1/requests/{id}` | 🔒 | | Current status (polling). Readable by the user who made it, or an admin. |
+| POST | `/v1/requests/{id}/retry` | 🔒 | | Only for `failed` requests: creates a new request with the same input and returns it. |
 
 `changes` lists the `gym_changes` a request produced, each with `reviewStatus` (`pending_bot`, `awaiting_admin`, `approved`, `rejected`) and a short reason when rejected. The status the user sees on "My requests" is derived (STACK_AND_SCHEMA.md 2.10): `failed` if the job failed, `pending` until every change is decided, then `completed` with counts.
 
-Deadlines: chat ~2 minutes, bot review ~10 minutes, sweeps ~1 hour (they drain slowly on purpose). The watchdog marks overdue requests `failed` with `failureReason: "timed_out"`.
+Deadlines: bot review ~10 minutes, sweeps ~1 hour (they drain slowly on purpose). The watchdog marks overdue requests `failed` with `failureReason: "timed_out"`.
+
+### 2.4b Chat (FR-8, FR-9): temporary
+
+| Method | Path | Who | Body | What happens |
+|---|---|---|---|---|
+| POST | `/v1/gyms/{id}/chat` | 🌐 | `{ question, history: [{ role, text }] }` (last few messages, capped) | `202 { chatId }`. Nothing is written to Postgres (section 1.4). |
+| GET | `/v1/chats/{chatId}` | 🔑 | | `{ status: "pending" \| "answered" \| "failed" \| "expired", answer?, sources? }`. Kept in the cache for 15 minutes, then gone. |
+| GET | `/v1/chats/{chatId}/events` | 🔑 | | *(Later)* SSE stream so the answer appears word by word. |
+
+Rate limited per user or IP. Useful facts in an answer become `gym_changes` for review (FR-9); the conversation itself is never saved.
 
 ### 2.5 Me (FR-18)
 
 | Method | Path | Who | Notes |
 |---|---|---|---|
-| GET | `/v1/me/requests?status=&cursor=` | 🔒 | The "My requests" page: add-gym, update-gym, sweep and chat requests, newest first. |
+| GET | `/v1/me/requests?status=&cursor=` | 🔒 | The "My requests" page: add-gym, update-gym and sweep requests, newest first. Chats are not listed (they're not stored). |
 | POST | `/v1/me/push-tokens` | 🔒 | `{ expoPushToken, platform }`. Used to notify on status changes. |
 | DELETE | `/v1/me/push-tokens/{token}` | 🔒 | On sign-out. |
-| DELETE | `/v1/me` | 🔒 | Delete account (Apple and Google require in-app account deletion). Requests are kept but unlinked; reviews are removed. |
+| DELETE | `/v1/me` | 🔒 | Delete account (Apple and Google require in-app account deletion). Requests are kept but unlinked; reviews are removed. There are no chats to delete. |
 
 ### 2.6 Admin (FR-14, FR-17)
 
@@ -288,7 +318,7 @@ When a request's status changes, the worker sends an Expo push notification to t
 | `POST /api/auth/signup`, `/signin`, `GET /api/auth/me` | Better Auth `/v1/auth/*` |
 | `GET /api/gyms/all`, `/by-area`, `/count`, `/area-scanned` | `GET /v1/tiles/{geohash5}` |
 | `GET/POST /api/gyms/:id/reviews` | `GET/POST /v1/gyms/{id}/reviews` |
-| `POST /api/gyms/:id/chat` (synchronous) | `POST /v1/gyms/{id}/chat` → 202 + polling |
+| `POST /api/gyms/:id/chat` (synchronous) | `POST /v1/gyms/{id}/chat` → 202 + polling `GET /v1/chats/{chatId}`, not stored |
 | `POST /api/gyms/find-more` (synchronous scrape) | `POST /v1/sweeps` → 202 + polling |
 | `POST /api/gyms/submissions` | `POST /v1/gyms` |
 | `POST /api/gyms/:id/edit-request` | `POST /v1/gyms/{id}/changes` |
@@ -304,7 +334,7 @@ Recommendations in bold.
 
 1. **API style:** **REST + Zod + generated OpenAPI**, or tRPC / GraphQL? (1.1)
 2. **Slow work:** **202 + request ID + polling now, SSE for chat later**? (1.3)
-3. **Signed-out users:** **random device ID** so they can read their own chat answers, attached to the account on sign-in? (1.4)
+3. ~~Signed-out users~~ **Decided (Joey, 2026-11-02): chats are temporary and not stored** (1.4, 2.4b). This also removes the need for a device ID.
 4. **Cache freshness:** **10-minute CDN cache + invalidate the tile on approval**? (1.5)
 5. **Filters:** **drop-in / trial / category / price in the app on loaded tiles; text search on the server**? (1.5)
 6. **Endpoints:** **one per action with a shared request shape**, rather than one generic `POST /requests`? (2.4)

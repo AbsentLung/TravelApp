@@ -283,9 +283,8 @@ erDiagram
     }
     requests {
         bigint id PK
-        bigint user_id FK "null if signed out"
-        text session_id "signed-out only"
-        text kind "add_gym | update_gym | sweep | chat"
+        bigint user_id FK
+        text kind "add_gym | update_gym | sweep"
         text status "pending | completed | failed"
         timestamptz deadline
         text failure_reason
@@ -294,7 +293,7 @@ erDiagram
     }
     gym_changes {
         bigint id PK
-        bigint request_id FK
+        bigint request_id FK "null for chat facts"
         bigint gym_id FK "null for a new gym"
         jsonb proposed
         jsonb evidence "source_kind, url, menu_posted_on"
@@ -417,7 +416,7 @@ flowchart TD
 
 ### 2.10 Requests, changes and approvals (FR-16 to 18)
 
-"My requests" shows add-gym, update-gym, sweep and chat requests together, each `pending / completed / failed`, and approvals/rejections. One sweep can find many gyms, and one chat can propose a few facts.
+"My requests" shows add-gym, update-gym and sweep requests together, each `pending / completed / failed`, and approvals/rejections. One sweep can find many gyms. Chats are not stored (decided by Joey, 2026-11-02; see API.md 1.4), so they never create `requests` rows; a fact found by chat is proposed directly as a `gym_changes` row.
 
 **Variation A: one `requests` table does everything** (kind, status, payload, review result)
 
@@ -444,7 +443,7 @@ flowchart LR
 - ✅ `gym_changes` doubles as the audit log of every change to every gym.
 - ❌ "My requests" joins two tables (cheap).
 
-**Variation C: separate tables per kind** (`gym_submissions`, `sweep_requests`, `chat_requests`)
+**Variation C: separate tables per kind** (`gym_submissions`, `sweep_requests`)
 
 - ✅ Each table has exactly its own columns.
 - ❌ "My requests" becomes a UNION of several tables; status logic duplicated; the watchdog has to scan each.
@@ -465,7 +464,7 @@ stateDiagram-v2
     rejected --> [*]
 ```
 
-Signed-out chat requests have `user_id = null` and a `session_id`, and a scheduled job deletes them after a day or so.
+Chats never create `requests` rows: they are temporary and live only in the cache for a few minutes (API.md 1.4).
 
 ### 2.11 Deduplicating gyms across sources
 

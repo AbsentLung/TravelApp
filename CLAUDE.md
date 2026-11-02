@@ -32,6 +32,7 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 ### LLM
 - The app uses Ollama (local/open models) for now to save money.
 - Keep every LLM call behind one interface so it can switch to Claude once the app makes money. No provider-specific calls outside that module.
+- Chats are temporary: never store chat questions or answers in Postgres or logs. Answers live in the cache for ~15 minutes only. Facts found by chat may be proposed as gym changes for review.
 
 ### Hosting
 - AWS (decided by Joey 2026-10-31; replaces the earlier Netlify + GCP e2-micro idea).

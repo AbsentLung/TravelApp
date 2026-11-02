@@ -356,12 +356,12 @@ sequenceDiagram
 
 **Data loss.** Redis keeps data in memory, so a crash *can* lose recent jobs. **Decided by Joey (2026-10-31): bot jobs (sweeps, chat replies, bot review) are allowed to fail or be lost, but the user who asked must be told.** So the design doesn't try to make every job survive; it makes sure no failure is silent:
 
-1. **Every user request is a row in Postgres first.** A `requests` record (sweep, chat question, gym submission) with a status of `pending`, `completed` or `failed`, plus a deadline. The queued job only carries the row's ID. A user's own submitted data is never lost, even if its job is.
+1. **Every user request is a row in Postgres first.** A `requests` record (sweep, gym submission) with a status of `pending`, `completed` or `failed`, plus a deadline. The queued job only carries the row's ID. A user's own submitted data is never lost, even if its job is.
 2. **Workers report the result.** A finished job sets its row to `completed`; one that errors or runs out of retries sets it to `failed` with a short reason.
 3. **Timeout watchdog catches lost jobs.** A periodic check marks any `pending` row past its deadline as `failed` (e.g. "timed out"). This covers jobs Redis lost in a crash, since nothing would ever report on them.
 4. **The user is told in the app** (decided by Joey, 2026-10-31):
    - **Signed in:** the request is stored against their account and appears on **one "My requests" page**, together with their add-gym and update-gym requests (FR-18). Each shows `pending`, `completed` or `failed`, with a **Retry** button on failed ones and a notification when the status changes.
-   - **Signed out** (e.g. chat, which doesn't need an account per FR-15): the status shows only on the screen where they asked, for that session. The row isn't linked to anyone and is cleaned up after a short time. Signing in is what makes a request show up in "My requests".
+   - **Chats are the exception (decided by Joey, 2026-11-02): they are temporary and never stored.** A chat answer lives only in the cache for a few minutes and on the screen where it was asked; a failed chat shows an error and a Retry button there. See API.md 1.4.
 5. **Persistence still on:** Redis `appendfsync everysec` keeps losses to ~1 second of jobs, so failures stay rare.
 
 ```mermaid
@@ -628,7 +628,7 @@ stateDiagram-v2
     Rejected --> [*]
 ```
 
-**AI chat (FR-8, 9).** The API accepts the question and returns a job id; a worker calls the LLM through the single LLM interface (Ollama in demo mode, Claude in scale mode) with the gym's record as context, then streams or posts the answer back. Answers to common questions are saved on the gym record (via the approval flow) so the next user gets them without an LLM call.
+**AI chat (FR-8, 9).** The API accepts the question and returns a job id; a worker calls the LLM through the single LLM interface (Ollama in demo mode, Claude in scale mode) with the gym's record as context, then streams or posts the answer back. The chat itself is temporary and never stored (decided by Joey, 2026-11-02). Useful facts in an answer (a price, a trial offer) are proposed as gym changes through the approval flow, so the next user sees them without asking.
 
 ### How Option B scales
 
