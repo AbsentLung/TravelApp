@@ -120,7 +120,10 @@ The app calls Photon (location search) and the base map tiles directly. Only wor
 - **Verification and approval.** A change skips admin review when a bot can verify it:
   - a price on the gym's own website is verified (no date check);
   - a price menu photo posted on Google Maps less than a year ago is verified;
-  - anything else (a user's edit, a price the chatbot found in a review) is stored as **unverified**, shown at the bottom of the price list, and waits for an admin. Only admins verify.
+  - anything else (a user's edit, a price the chatbot found in a review or on the web) is stored as **unverified**, shown at the bottom of the price list, and waits for an admin. Only admins verify.
+  - a **new gym** is verified if it's in OpenStreetMap, on Google Maps or on its own website within about 50 m with a matching name and isn't a duplicate; **name, address, hours, categories, drop-ins and trial** are verified if found on the gym's website or Google Maps listing. **Closing or removing a gym always needs an admin.**
+  - the bot rejects spam, missing name or location, impossible locations and exact duplicates on its own, telling the user why. Non-price changes waiting for an admin stay hidden until approved.
+  - the chatbot may also search the web, but what it finds there is unverified unless it's the gym's own website or a recent menu photo. (REQUIREMENTS.md FR-8, FR-24 to FR-27.)
 - **Chats are temporary.** Chat questions and answers are never stored in Postgres or logs. Answers live in the cache for about 15 minutes under a random chat ID; follow-ups send recent messages along. Useful facts from a chat are still proposed as `gym_changes`.
 - **Zoom 11 rule.** Gyms, filters and tile loading only happen at zoom 11 and above (`MIN_GYM_ZOOM = 11`). Below that, no tiles are requested or cached.
 - **Tiles.** The map loads geohash4 tiles; Overpass refreshes (about weekly) and sweeps work on geohash5 cells. Stale tiles are served at once and refreshed in the background. An approved change invalidates its tile in the CDN.
