@@ -6,6 +6,12 @@ Expo/React Native rules (SDK version, commands, routing, EAS) live in AGENTS.md:
 
 @AGENTS.md
 
+## Security: never commit secrets (absolute rule)
+
+- Never commit secrets to this repo: API keys, tokens, passwords, database URLs with credentials, private keys, `.env` files, or AWS credentials. This applies to every branch, commit, PR, test fixture and example.
+- Secrets live in environment variables: a local `.env` (git-ignored) for development, AWS SSM Parameter Store in production. Only `.env.example` with placeholder values is committed.
+- Before every commit, check the staged diff for secrets. If one was ever committed, stop and tell Joey: the secret must be rotated, because deleting it from git history isn't enough.
+
 ## Project decisions
 
 These were agreed with Joey. Follow them unless he changes them; update this file when he does.
