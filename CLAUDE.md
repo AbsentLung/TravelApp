@@ -27,12 +27,20 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - Split the map into fixed geohash cells. Load the cells on screen as the user pans/zooms, and only above a minimum zoom.
 - Refresh stale cells from Overpass (about weekly), using `last_fetched`.
 - Saved/submitted gyms are written to Postgres immediately (never only to cache).
-- Redis is included now as a cache layer in front of Postgres (e.g. Upstash free tier). Access it only through a small cache interface so the provider can change.
+- Redis (ElastiCache) is the cache and BullMQ queue in scale mode; demo mode uses an in-memory cache and a pg-boss queue in Postgres. Access both only through small cache and queue interfaces.
 
 ### LLM
 - The app uses Ollama (local/open models) for now to save money.
 - Keep every LLM call behind one interface so it can switch to Claude once the app makes money. No provider-specific calls outside that module.
 
 ### Hosting
-- Start near-free: Netlify (web), GCP e2-micro (backend), Cloudflare (DNS/CDN).
-- Move to managed hosting once there is real traffic, so keep config in env vars and avoid host-specific lock-in.
+- AWS (decided by Joey 2026-10-31; replaces the earlier Netlify + GCP e2-micro idea).
+- Demo mode stays near-free on a single small instance; scale mode moves to managed AWS services. Demo: Lightsail + Docker Compose, S3 + CloudFront + Route 53. Scale: ECS Fargate, RDS Postgres, ElastiCache, AWS CDK. See STACK_AND_SCHEMA.md.
+- Keep config in env vars and keep AWS-specific code behind interfaces, so services can be swapped.
+
+### Stack and schema (decided 2026-11-01/02, details in STACK_AND_SCHEMA.md)
+- TypeScript everywhere: Fastify API + workers, npm-workspaces monorepo, Zod schemas shared with the app. Drizzle ORM + migrations. Better Auth (users in our Postgres).
+- Map: MapLibre with self-hosted Protomaps tiles. Never use the public OSM tile servers in production.
+- Scraper: Playwright in sweep workers. Never pay for proxies or scraping APIs.
+- Schema: PostGIS point + GIST + `geohash5` tiles; `tile_fetches`; `gym_prices` (current price per kind, no history, `last_seen_at`); `requests` + `gym_changes`; `gym_source_refs`; `users.role`; bigint IDs.
+- Price verification: web price = verified; Google Maps menu photo posted < 1 year ago = verified; otherwise admin.
