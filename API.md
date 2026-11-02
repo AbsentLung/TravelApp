@@ -198,7 +198,7 @@ Handled by Better Auth, mounted at `/v1/auth/*`. We don't write these routes our
 }
 ```
 
-`description` is cut to about 300 characters to keep tiles small; the full text is in gym details. `dayPass.verified` is false for unverified prices, which the price list shows at the bottom.
+`description` is cut to about 300 characters to keep tiles small; the full text is in gym details. `dayPass` is the verified day-pass price when there is one, otherwise the stored unverified one (`verified: false`), which the price list shows at the bottom. Unverified prices are stored, not just pending in the review queue (STACK_AND_SCHEMA.md 2.6).
 
 Headers: `Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=600`, `ETag`. An unknown or empty tile returns `200` with `"gyms": []` (and enqueues a fetch), not `404`, so the empty answer is cached too.
 
@@ -236,6 +236,13 @@ Gym details response:
       "sourceKind": "gym_website", "sourceUrl": "https://...",
       "verifiedBy": "bot",
       "lastSeenAt": "2026-10-20T00:00:00Z"
+    },
+    {
+      "kind": "week_pass",
+      "amountMinor": 600000, "currency": "IDR", "usdCents": 3800,
+      "sourceKind": "user", "sourceUrl": null,
+      "verifiedBy": null,
+      "lastSeenAt": "2026-11-01T00:00:00Z"
     }
   ],
   "rating": 4.6,
@@ -245,7 +252,7 @@ Gym details response:
 }
 ```
 
-`openingHours` uses the OSM `opening_hours` format, which the app parses for "open now".
+`prices` can hold a verified and an unverified price of the same kind; `verifiedBy: null` marks unverified ones. `openingHours` uses the OSM `opening_hours` format, which the app parses for "open now".
 
 ### 2.4 Requests: one shape for sweeps and gym changes (FR-11, FR-16, FR-18)
 

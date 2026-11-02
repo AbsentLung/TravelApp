@@ -272,7 +272,8 @@ erDiagram
         text source_url
         date menu_posted_on "Google Maps photo date"
         timestamptz last_seen_at
-        text verified_by "bot | admin | null"
+        text verified_by "bot | admin | null = unverified"
+        bool is_verified "generated; unique (gym_id, kind, is_verified)"
     }
     gym_source_refs {
         bigint gym_id FK
@@ -360,7 +361,7 @@ The sections below are the choices behind this diagram, each with variations.
 
 ### 2.6 Prices and the verification rule
 
-**Decided by Joey (2026-11-01): no price history.** Keep only the current price, plus **when it was last seen**. The approval rule needs to know **where** each price came from, and for price menus **when the photo was posted**.
+**Decided by Joey (2026-11-01): no price history.** Keep only the current price (verified and unverified, see below), plus **when it was last seen**. The approval rule needs to know **where** each price came from, and for price menus **when the photo was posted**.
 
 **Decided by Joey (2026-11-01): how prices are verified.**
 - **Price found on the web** (the gym's own website): verified, no date check needed.
@@ -372,7 +373,14 @@ The sections below are the choices behind this diagram, each with variations.
 | Price columns on `gyms` (today: `day_pass_price_cents`, ...) plus `unverified_gym_data` | Simple. | No source, URL or dates, so the rule can't be checked or audited. One currency. Adding source + date + last seen for 4 price kinds means ~20 columns on `gyms`. |
 | **`gym_prices` table with one row per gym per price kind** (unique `(gym_id, kind)`): amount, currency, `usd_cents`, `source_kind`, `source_url`, `menu_posted_on`, `last_seen_at`, `verified_by`. Overwritten when a newer price is approved. | Exactly "current price + when last seen + where from", no history. Handles any currency. Adding a new price kind (e.g. 10-visit pass) is a row, not a column. | Map filters join it (one indexed join; or copy `has_day_pass` / cheapest price onto `gyms` if tile queries get slow). |
 
-**Recommendation: `gym_prices`, one row per gym per kind, no history.** When the scraper sees the same price again, it only bumps `last_seen_at`. The old row's details stay in `gym_changes` (section 2.10) as the audit trail of what was approved, so we still know who changed what without a history table.
+**Recommendation: `gym_prices`, no history.** When the scraper sees the same price again, it only bumps `last_seen_at`. The old row's details stay in `gym_changes` (section 2.10) as the audit trail of what was approved, so we still know who changed what without a history table.
+
+**Decided by Joey (2026-11-02): unverified prices are stored too**, so they can be shown at the bottom of the right sidebar's day-pass list (as the vibe-coded app does with its "Unverified" prices). So `gym_prices` holds **at most two current rows per gym per kind: one verified and one unverified** (unique on `(gym_id, kind, is_verified)`, where `is_verified` is generated from `verified_by IS NOT NULL`). Still no history: a newer price of the same kind and status replaces the old one.
+
+- An unverified price is stored **straight away** with `verified_by` empty, so users see it at once, clearly marked unverified.
+- It also gets a `gym_changes` row waiting for an admin. When the admin approves it, the price becomes the verified row (replacing any older verified one) and the unverified row is removed.
+- When a verified price is newer than the unverified one, the unverified row is removed, since it's out of date.
+- The app shows the verified price when there is one, and the unverified one otherwise.
 
 ```mermaid
 flowchart TD
@@ -380,8 +388,10 @@ flowchart TD
     W -->|yes| A[Auto-approve<br/>verified_by = bot]
     W -->|no| M{source_kind = price_menu<br/>AND menu_posted_on on Google Maps<br/>within the last year?}
     M -->|yes| A
-    M -->|no| AD[awaiting_admin]
-    A --> U[Upsert gym_prices row,<br/>last_seen_at = now]
+    M -->|no| UV[Store as the unverified row<br/>shown at bottom of price list]
+    UV --> AD[gym_change awaiting_admin]
+    AD -->|admin approves| A
+    A --> U[Upsert the verified row,<br/>last_seen_at = now,<br/>remove older unverified row]
 ```
 
 ### 2.7 Flexible gym details
@@ -496,7 +506,7 @@ Gyms without an external ID (user-submitted) are matched by distance + name simi
 
 ### 2.14 Migrating from today's demo schema
 
-The demo `db/schema.sql` is a hand-made dump. The plan is a fresh Drizzle schema plus a one-off script that copies demo gyms over: `lat/lng` → `location`, `osm_id` → `gym_source_refs`, price columns and `unverified_gym_data` → `gym_prices` rows (unverified, `last_seen_at` = the old `scraped_at`), `gym_categories` → `categories[]`, `admins` → `users.role`, `gym_submissions` → `requests` + `gym_changes`, `fetched_areas` / `scanned_areas` → `tile_fetches`. Demo reviews come along with `user_id` left empty.
+The demo `db/schema.sql` is a hand-made dump. The plan is a fresh Drizzle schema plus a one-off script that copies demo gyms over: `lat/lng` → `location`, `osm_id` → `gym_source_refs`, price columns on `gyms` → **verified** `gym_prices` rows (the vibe-coded app shows them as confirmed prices), `unverified_gym_data` → **unverified** `gym_prices` rows (`last_seen_at` = the old `scraped_at`), `gym_categories` → `categories[]`, `admins` → `users.role`, `gym_submissions` → `requests` + `gym_changes`, `fetched_areas` / `scanned_areas` → `tile_fetches`. Demo reviews come along with `user_id` left empty.
 
 ### 2.15 How different is this from the vibe-coded database?
 
@@ -525,7 +535,7 @@ Nothing in the vibe-coded data is lost: section 2.14's one-off script copies it 
 **Decided by Joey (2026-11-01):**
 - Accepted as recommended: backend (1.1), DB access (1.3), auth (1.4), demo hosting (1.5), Ollama on Joey's PC (1.5), scale hosting (1.6), results to the app (1.8), tile size and location (2.3, 2.4), requests + `gym_changes` (2.10), and the smaller schema items (2.7, 2.8, 2.9, 2.11, 2.12, 2.13).
 - **Scraper (1.9):** Playwright in sweep workers; never pay for proxies.
-- **Prices (2.6):** no price history; one current price per kind with `last_seen_at`.
+- **Prices (2.6):** no price history; one current price per kind with `last_seen_at`. Unverified prices are stored too (one verified + one unverified row per kind at most) and shown at the bottom of the price list (Joey, 2026-11-02).
 - **Price verification (2.6):** web prices are verified with no date check; a price menu counts if its photo was posted on Google Maps less than a year ago.
 
 - **Queue (1.2):** pg-boss in demo mode, BullMQ in scale mode (Joey asked about Kafka and RabbitMQ first; answer in 1.2).
