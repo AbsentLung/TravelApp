@@ -37,6 +37,8 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 ### UI
 - Keep the UI as it is in the vibe-coded app (`GymFinderVibeCoded` branch); Joey is happy with it (2026-11-02). The restructure changes data loading and the map library underneath, not how the app looks or behaves.
 - This includes the right sidebar and its collapsible sections (e.g. the trial section), the filter chips, the day-pass price list, the gym details panel and the add/edit gym flows. Reuse the existing components (`gym-panels.tsx` etc.) rather than redesigning them.
+- Reviews UI stays as in the vibe-coded app; the only addition is an "Edit" button next to the signed-in user's own review. One review per user per gym, edits overwrite it (no review history).
+- No "apply to be admin" flow; admins promote users.
 - Any visible change needs Joey's OK first.
 
 ### Map filters

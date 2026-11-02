@@ -213,7 +213,7 @@ The app works out which geohash4 cells cover the screen and requests them in par
 | GET | `/v1/gyms/{id}` | 🌐 | Full details (below). `Cache-Control: public, s-maxage=300`, invalidated on approval like tiles. |
 | GET | `/v1/gyms/{id}/reviews?cursor=` | 🌐 | Paginated. |
 | POST | `/v1/gyms/{id}/reviews` | 🔒 | `{ rating, body }`. One review per user per gym (409 on a second; update with PUT). |
-| PUT | `/v1/gyms/{id}/reviews/mine` | 🔒 | Edit own review. |
+| PUT | `/v1/gyms/{id}/reviews/mine` | 🔒 | Edit own review. Overwrites it; no review history is kept. Reviews in `GET .../reviews` include `isMine: true` for the signed-in user's own review so the app can show the "Edit" button. |
 
 Gym details response:
 
@@ -358,8 +358,8 @@ When a request's status changes, the worker sends an Expo push notification to t
 5. **Filters exactly as in the vibe-coded app**, all in the app; no price filter; right-sidebar day-pass list cheapest first with unverified prices at the bottom. Unverified prices are stored; only admins verify them. (1.5)
 6. **One endpoint per action** with a shared request shape. (2.4)
 7. **Social login: Google and Facebook at launch; Apple before the iOS release** (required by Apple once other social logins exist). (2.1)
-8. **Admins:** no "apply to be admin"; admins promote users; the first admin is set from the command line. (2.6)
-9. **Reviews:** one per user per gym, editable. (2.3)
+8. **Admins:** no "apply to be admin" (confirmed by Joey); admins promote users; the first admin is set from the command line. (2.6)
+9. **Reviews:** one per user per gym; users can edit their own; no review history. The reviews UI stays as in the vibe-coded app, plus an "Edit" button next to your own review. (2.3)
 10. **Tile size for loading:** geohash4 tiles (~39 × 20 km) for loading and caching; geohash5 kept for Overpass refreshes and sweep jobs. (2.2)
 - **UI:** the vibe-coded app's UI stays as it is, including the right sidebar's collapsible sections.
 
