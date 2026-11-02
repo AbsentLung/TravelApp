@@ -6,6 +6,10 @@ Expo/React Native rules (SDK version, commands, routing, EAS) live in AGENTS.md:
 
 @AGENTS.md
 
+## Absolute rules
+
+- **Never commit secrets to the repo.** That means API keys, tokens, passwords, private keys, and `.env` files. Keep secrets in env vars or a secrets manager, and only commit placeholder values (like `.env.example`). If a secret is ever committed, stop and tell Joey so it can be rotated.
+
 ## Project decisions
 
 These were agreed with Joey. Follow them unless he changes them; update this file when he does.

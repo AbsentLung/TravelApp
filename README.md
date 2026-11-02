@@ -14,23 +14,27 @@ Each phase finishes before the next one starts, unless noted. Check items off as
 
 ## 1. Requirements
 
-- [ ] List functional requirements
-- [ ] List non-functional requirements (performance, scale to thousands of users, cost, privacy, offline behavior)
-- [ ] List the riskiest unknowns (e.g. limits of whichever map/gym data source we pick, cost and hosting of the chatbot's LLM, moderating user-submitted gym data)
-- [ ] Ask Claude to research whether the requirements and unknowns are realistic
-- [ ] Decide what's in scope for beta / demos and what's saved for later
+- [x] List functional requirements
+- [x] List non-functional requirements (performance, scale to thousands of users, cost, privacy, offline behavior)
+- [x] List the riskiest unknowns (e.g. limits of whichever map/gym data source we pick, cost and hosting of the chatbot's LLM, moderating user-submitted gym data)
+- [x] Ask Claude to research whether the requirements and unknowns are realistic
+- [x] Decide what's in scope for beta / demos and what's saved for later
+
+> The full requirements are in [REQUIREMENTS.md](./REQUIREMENTS.md).
 
 ## 2. Design
 
 Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a constraint going in.
 
-- [ ] High-level design: ask Claude for several options with pros and cons, debate until we land on the best one
-- [ ] Choose everything Expo doesn't cover, driven by the high-level design: where the backend runs (e.g. Expo API routes or a separate server), database, cache, hosting, the map and gym data source, and the chatbot's LLM
-- [ ] Database schema: ask Claude for several variations, debate until we land on the best one
-- [ ] API design: compare variations and their trade-offs, then approve a final design
+- [x] High-level design: ask Claude for several options with pros and cons, debate until we land on the best one
+- [x] Choose everything Expo doesn't cover, driven by the high-level design: where the backend runs (e.g. Expo API routes or a separate server), database, cache, hosting, the map and gym data source, and the chatbot's LLM
+- [x] Database schema: ask Claude for several variations, debate until we land on the best one
+- [x] API design: compare variations and their trade-offs, then approve a final design
 - [x] Clean up into a presentable [`DESIGN.md`](./DESIGN.md) for others to read
-- [ ] Update `CLAUDE.md` (drafted in [PR #1](https://github.com/AbsentLung/TravelApp/pull/1)) so Claude stays on track and builds things the way we planned
-  - [ ] Include an absolute rule: Claude must **never** commit secrets (API keys, tokens, passwords, `.env` files) to the repo
+- [x] Update [`CLAUDE.md`](./CLAUDE.md) so Claude stays on track and builds things the way we planned
+  - [x] Include an absolute rule: Claude must **never** commit secrets (API keys, tokens, passwords, `.env` files) to the repo
+
+> The full design is in [DESIGN.md](./DESIGN.md).
 
 ## 3. Environment
 
