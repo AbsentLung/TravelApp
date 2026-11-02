@@ -254,7 +254,8 @@ erDiagram
         bigint id PK
         text name
         geometry location "Point, 4326"
-        text geohash5 "generated, indexed"
+        text geohash4 "generated, indexed: map loading tiles"
+        text geohash5 "generated, indexed: refresh/sweep cells"
         text_array categories
         bool accepts_drop_in
         bool has_trial
@@ -337,7 +338,7 @@ The sections below are the choices behind this diagram, each with variations.
 | Speed for "load tile X" | Fast | Fastest (exact match) |
 | Matches cache keys | No | Yes |
 
-**Recommendation: `geometry(Point, 4326)` + GIST (R-tree), plus a stored `geohash5 = ST_GeoHash(location, 5)` column with a b-tree index.** Loading a tile becomes `WHERE geohash5 = $1`, which is about as cheap as a query gets, and it's the same key the CDN and Redis cache by.
+**Recommendation: `geometry(Point, 4326)` + GIST (R-tree), plus a stored `geohash5 = ST_GeoHash(location, 5)` column with a b-tree index.** Loading a map tile becomes `WHERE geohash4 = $1`, which is about as cheap as a query gets, and it's the same key the CDN and Redis cache by.
 
 ### 2.4 Tile size (geohash precision)
 
@@ -347,7 +348,7 @@ The sections below are the choices behind this diagram, each with variations.
 | **5** | **4.9 × 4.9 km** | A city-zoom screen (~zoom 12) needs ~6–12 cells; a busy cell has maybe 50–200 gyms, a few tens of KB. Small enough for one Overpass query or one sweep job. | More cells to request at low zoom, so we need a minimum zoom (already agreed). |
 | 6 | 1.2 × 0.6 km | Tiny responses. | Dozens of requests per screen; many more cache keys; sweeps split into many small jobs. |
 
-**Recommendation: precision 5.** **Decided by Joey (2026-11-02): the map loads gyms, shows gym pins and shows filters only at zoom 11 and above** (`FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map screens). Below zoom 11 nothing is requested or cached and no pins or filters are shown, exactly like the vibe-coded app.
+**Decided by Joey (2026-11-02): two sizes.** The map **loads and caches gyms by geohash4** (about 39 × 20 km), because at zoom 11 a phone screen covers roughly 30 × 65 km, which would be ~100 geohash5 tiles but only ~6 geohash4 tiles. **Overpass refreshes, sweeps and `tile_fetches` stay on geohash5**, so each external job stays small. `gyms` gets both as generated, indexed columns (`geohash4 = left(geohash5, 4)`). **Decided by Joey (2026-11-02): the map loads gyms, shows gym pins and shows filters only at zoom 11 and above** (`FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map screens). Below zoom 11 nothing is requested or cached and no pins or filters are shown, exactly like the vibe-coded app.
 
 ### 2.5 Tile refresh and sweep status
 

@@ -2,7 +2,7 @@
 
 Phase 2 of the roadmap, step 3. It builds on [DESIGN_DISCUSSION.md](./DESIGN_DISCUSSION.md) (Option B, demo/scale modes, queues, request status) and [STACK_AND_SCHEMA.md](./STACK_AND_SCHEMA.md) (Fastify, Zod, Better Auth, the schema). Requirement IDs refer to [REQUIREMENTS.md](./REQUIREMENTS.md).
 
-Part 1 covers the choices that shape the whole API, each with variations and a **recommendation**. Part 2 is the endpoint list that the Claude CLI builds from. Nothing here is final until Joey signs off in review.
+Part 1 covers the choices that shape the whole API, each with variations and a **recommendation**. Part 2 is the endpoint list that the Claude CLI builds from. All decisions are recorded in section 3.
 
 ---
 
@@ -92,7 +92,7 @@ Signed-in users use a Better Auth session: a cookie on web and the Better Auth E
 
 **Decided by Joey (2026-11-02): gyms, filters and tile loading only happen at zoom 11 and above**, the same cutoff as `FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map screens. Below zoom 11 the app requests no tiles (so nothing is added to any cache), shows no gym pins and no filter chips, exactly like the vibe-coded app today. Every cache below (app, CloudFront, Redis) therefore only ever holds tiles someone looked at closely.
 
-The map loads gyms by fixed geohash5 tile (STACK_AND_SCHEMA.md 2.3, 2.4). The response is the same for every user, so CloudFront and the browser can cache it.
+The map loads gyms by fixed **geohash4** tile, about 39 × 20 km (decided by Joey, 2026-11-02; STACK_AND_SCHEMA.md 2.3, 2.4). Overpass refreshes and sweeps still work on the smaller geohash5 cells inside it. The response is the same for every user, so CloudFront and the browser can cache it.
 
 Keeping caches fresh after an admin approves a change:
 
@@ -166,18 +166,18 @@ Handled by Better Auth, mounted at `/v1/auth/*`. We don't write these routes our
 |---|---|---|---|
 | POST | `/v1/auth/sign-up/email` | 🌐 | Email + password. Sends a verification email. |
 | POST | `/v1/auth/sign-in/email` | 🌐 | |
-| POST | `/v1/auth/sign-in/social` | 🌐 | Google and Apple (Apple is required on iOS once Google is offered). |
+| POST | `/v1/auth/sign-in/social` | 🌐 | **Google and Facebook at launch** (Joey, 2026-11-02). **Apple later, but before the iOS App Store release:** Apple requires Sign in with Apple in any iOS app that offers other social logins. It's free apart from the Apple developer account the iOS release needs anyway. |
 | POST | `/v1/auth/sign-out` | 🔒 | |
 | GET | `/v1/auth/get-session` | 🔒 | Current user, including `role`. |
 | POST | `/v1/auth/forget-password`, `/v1/auth/reset-password` | 🌐 | |
 
 ### 2.2 Map tiles (FR-4, FR-5)
 
-**`GET /v1/tiles/{geohash5}`** 🌐
+**`GET /v1/tiles/{geohash4}`** 🌐
 
 ```json
 {
-  "geohash": "qw3k8",
+  "geohash": "qw3k",
   "fetchedAt": "2026-10-28T09:12:00Z",
   "stale": false,
   "gyms": [
@@ -202,7 +202,7 @@ Handled by Better Auth, mounted at `/v1/auth/*`. We don't write these routes our
 
 Headers: `Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=600`, `ETag`. An unknown or empty tile returns `200` with `"gyms": []` (and enqueues a fetch), not `404`, so the empty answer is cached too.
 
-The app works out which geohash5 cells cover the screen and requests them in parallel. **Open (section 3, item 10):** at zoom 11 a phone screen covers roughly 30 × 65 km, which is about 100 geohash5 tiles (a desktop browser, several hundred). That is too many requests per screen, so the tile size used for *loading* may need to grow to geohash4 (about 39 × 20 km, roughly 6 to 20 tiles per screen at zoom 11).
+The app works out which geohash4 cells cover the screen and requests them in parallel: roughly 6 tiles on a phone and up to about 20 on a desktop browser at zoom 11. A busy tile (a whole big city) is about 1,000 gyms, around 30 KB compressed. `fetchedAt` and `stale` refer to the oldest geohash5 refresh inside the tile; a stale tile enqueues refreshes for just the stale geohash5 cells.
 
 **Decided by Joey (2026-11-02): gyms, filters and tile loading only happen at zoom 11 and above**, the same cutoff as `FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map screens. Below zoom 11 the app requests no tiles (so nothing is added to any cache), shows no gym pins and no filter chips, exactly like the vibe-coded app today. The app keeps this as one shared constant (`MIN_GYM_ZOOM = 11` in `packages/shared`).
 
@@ -336,7 +336,7 @@ When a request's status changes, the worker sends an Expo push notification to t
 | Demo route (`server/index.js`) | New route |
 |---|---|
 | `POST /api/auth/signup`, `/signin`, `GET /api/auth/me` | Better Auth `/v1/auth/*` |
-| `GET /api/gyms/all`, `/by-area`, `/count`, `/area-scanned` | `GET /v1/tiles/{geohash5}` |
+| `GET /api/gyms/all`, `/by-area`, `/count`, `/area-scanned` | `GET /v1/tiles/{geohash4}` |
 | `GET/POST /api/gyms/:id/reviews` | `GET/POST /v1/gyms/{id}/reviews` |
 | `POST /api/gyms/:id/chat` (synchronous) | `POST /v1/gyms/{id}/chat` → 202 + polling `GET /v1/chats/{chatId}`, not stored |
 | `POST /api/gyms/find-more` (synchronous scrape) | `POST /v1/sweeps` → 202 + polling |
@@ -348,20 +348,19 @@ When a request's status changes, the worker sends an Expo push notification to t
 
 ---
 
-## 3. Decisions needed from Joey
+## 3. Decisions
 
-Recommendations in bold.
+**Decided by Joey (2026-11-02):**
+1. **API style:** REST + Zod schemas + generated OpenAPI. (1.1)
+2. **Slow work:** 202 + ID + polling now; SSE for chat later. (1.3)
+3. **Chats are temporary and never stored**; a random chat ID replaces the device ID. (1.4, 2.4b)
+4. **Tiles are only fetched and cached at zoom 11 and above**; gyms and filters only show from zoom 11, as in the vibe-coded app. 10-minute CDN cache with a per-tile refresh on approval. (1.5)
+5. **Filters exactly as in the vibe-coded app**, all in the app; no price filter; right-sidebar day-pass list cheapest first with unverified prices at the bottom. Unverified prices are stored; only admins verify them. (1.5)
+6. **One endpoint per action** with a shared request shape. (2.4)
+7. **Social login: Google and Facebook at launch; Apple before the iOS release** (required by Apple once other social logins exist). (2.1)
+8. **Admins:** no "apply to be admin"; admins promote users; the first admin is set from the command line. (2.6)
+9. **Reviews:** one per user per gym, editable. (2.3)
+10. **Tile size for loading:** geohash4 tiles (~39 × 20 km) for loading and caching; geohash5 kept for Overpass refreshes and sweep jobs. (2.2)
+- **UI:** the vibe-coded app's UI stays as it is, including the right sidebar's collapsible sections.
 
-1. **API style:** **REST + Zod + generated OpenAPI**, or tRPC / GraphQL? (1.1)
-2. **Slow work:** **202 + request ID + polling now, SSE for chat later**? (1.3)
-3. ~~Signed-out users~~ **Decided (Joey, 2026-11-02): chats are temporary and not stored** (1.4, 2.4b). This also removes the need for a device ID.
-4. **Cache freshness:** **Decided (Joey, 2026-11-02): tiles are only fetched and cached at zoom 11 and above, and gyms and filters only show from zoom 11, exactly like the vibe-coded app.** The 10-minute CDN cache with a per-tile refresh on approval stays as recommended unless you say otherwise. (1.5)
-5. **Filters:** **Decided (Joey, 2026-11-02): exactly as in the vibe-coded app**: text search, drop-ins, trials and categories, all in the app on loaded tiles; no price filter; the right sidebar lists day-pass prices cheapest first with unverified ones at the bottom. No server search endpoint. (1.5)
-6. **Endpoints:** **one per action with a shared request shape**, rather than one generic `POST /requests`? (2.4)
-7. **Social login:** **Google + Apple** at launch, or email only first? (2.1)
-8. **Admins:** drop the demo's "apply to be admin" flow; admins promote users, and the first admin is set from the command line? (2.6)
-9. **Reviews:** one review per user per gym, editable? (2.3)
-
-10. **Tile size for loading at zoom 11:** geohash5 tiles (4.9 km) mean ~100 requests per phone screen at zoom 11. **Recommendation: load and cache by geohash4 (~39 × 20 km, ~6 to 20 tiles per screen), and keep geohash5 for Overpass refreshes and sweep jobs**, where smaller areas keep each job light. A busy geohash4 tile (a whole big city) is maybe 1,000 gyms, about 30 KB compressed. Alternative: keep geohash5 and raise the minimum zoom to 13, which changes how the vibe-coded app behaves.
-
-Once these are settled, the Claude CLI can start the restructure using this doc as the API contract.
+Nothing is still open. The Claude CLI can start the restructure using this doc as the API contract.
