@@ -24,7 +24,7 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - The app calls our backend, not Overpass directly.
 
 ### Caching and loading
-- Split the map into fixed geohash cells. Load the cells on screen as the user pans/zooms, and only above a minimum zoom.
+- Split the map into fixed geohash5 cells. Load the cells on screen as the user pans/zooms, only at zoom 11 and above (same as `FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map). Below zoom 11: no tile requests, nothing cached, no gym pins, no filters.
 - Refresh stale cells from Overpass (about weekly), using `last_fetched`.
 - Saved/submitted gyms are written to Postgres immediately (never only to cache).
 - Redis (ElastiCache) is the cache and BullMQ queue in scale mode; demo mode uses an in-memory cache and a pg-boss queue in Postgres. Access both only through small cache and queue interfaces.

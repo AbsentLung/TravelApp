@@ -347,7 +347,7 @@ The sections below are the choices behind this diagram, each with variations.
 | **5** | **4.9 × 4.9 km** | A city-zoom screen (~zoom 12) needs ~6–12 cells; a busy cell has maybe 50–200 gyms, a few tens of KB. Small enough for one Overpass query or one sweep job. | More cells to request at low zoom, so we need a minimum zoom (already agreed). |
 | 6 | 1.2 × 0.6 km | Tiny responses. | Dozens of requests per screen; many more cache keys; sweeps split into many small jobs. |
 
-**Recommendation: precision 5, with the map loading gyms only at about zoom 11 and above.** Below that, show a "zoom in to see gyms" hint, or later a precomputed count per precision-3 cell.
+**Recommendation: precision 5.** **Decided by Joey (2026-11-02): the map loads gyms, shows gym pins and shows filters only at zoom 11 and above** (`FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map screens). Below zoom 11 nothing is requested or cached and no pins or filters are shown, exactly like the vibe-coded app.
 
 ### 2.5 Tile refresh and sweep status
 
