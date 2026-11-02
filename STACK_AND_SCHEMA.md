@@ -533,9 +533,10 @@ Nothing in the vibe-coded data is lost: section 2.14's one-off script copies it 
 - **Prices (2.6):** no price history; one current price per kind with `last_seen_at`.
 - **Price verification (2.6):** web prices are verified with no date check; a price menu counts if its photo was posted on Google Maps less than a year ago.
 
-**Still open (answered questions, waiting for Joey's OK):**
-1. **Queue (1.2):** Joey asked why not Kafka or RabbitMQ. Answer in section 1.2: they lack built-in job features we need and add a service to run. Recommendation unchanged: **pg-boss (demo) + BullMQ (scale)**.
-2. **Map (1.7):** the vibe-coded app uses Leaflet with the public OSM tile servers. Recommendation unchanged: **MapLibre + self-hosted Protomaps**.
-3. **R-trees (2.3):** the recommended GIST index is an R-tree, so no change needed.
+- **Queue (1.2):** pg-boss in demo mode, BullMQ in scale mode (Joey asked about Kafka and RabbitMQ first; answer in 1.2).
+- **R-trees (2.3):** GIST (R-tree) + `geohash5` as recommended.
+
+**Still open:**
+1. **Map (1.7):** MapLibre + self-hosted Protomaps, or keep Leaflet? Joey asked how big the switch is. About 1,000 of the ~2,400 lines in the two map screens are map-specific; the panels, filters and search stay. The data loading in those screens is rewritten for geohash tiles anyway, so doing both together avoids touching them twice. The app needs an Expo development build instead of Expo Go.
 
 Once these are confirmed, the next doc is the API (endpoints, tile URLs and cache headers, request polling).
