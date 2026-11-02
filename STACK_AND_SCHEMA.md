@@ -6,7 +6,7 @@ This doc covers what's still open: **which tools build Option B** (part 1) and *
 
 **Decided by Joey (2026-10-31): hosting is AWS.** This replaces the earlier Netlify + GCP e2-micro idea. Everything in part 1 assumes AWS.
 
-Each section lists the variations, pros and cons, and a **recommendation**. Nothing here is final until Joey signs off in review. Prices are rough on-demand list prices for a US region, to compare options, not quotes; check the AWS pricing pages before buying.
+Each section lists the variations, pros and cons, and a **recommendation**. All decisions are recorded in section 3. Prices are rough on-demand list prices for a US region, to compare options, not quotes; check the AWS pricing pages before buying.
 
 ---
 
@@ -536,7 +536,6 @@ Nothing in the vibe-coded data is lost: section 2.14's one-off script copies it 
 - **Queue (1.2):** pg-boss in demo mode, BullMQ in scale mode (Joey asked about Kafka and RabbitMQ first; answer in 1.2).
 - **R-trees (2.3):** GIST (R-tree) + `geohash5` as recommended.
 
-**Still open:**
-1. **Map (1.7):** MapLibre + self-hosted Protomaps, or keep Leaflet? Joey asked how big the switch is. About 1,000 of the ~2,400 lines in the two map screens are map-specific; the panels, filters and search stay. The data loading in those screens is rewritten for geohash tiles anyway, so doing both together avoids touching them twice. The app needs an Expo development build instead of Expo Go.
+- **Map (1.7):** MapLibre + self-hosted Protomaps, done together with the switch to geohash tile loading (about 1,000 of the ~2,400 map-screen lines change; needs an Expo development build).
 
-Once these are confirmed, the next doc is the API (endpoints, tile URLs and cache headers, request polling).
+Nothing is still open. The next doc is the API (endpoints, tile URLs and cache headers, request polling).
