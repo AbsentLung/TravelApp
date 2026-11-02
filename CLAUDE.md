@@ -49,4 +49,4 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - Scraper: Playwright in sweep workers. Never pay for proxies or scraping APIs.
 - Schema: PostGIS point + GIST + `geohash5` tiles; `tile_fetches`; `gym_prices` (current verified + unverified price per kind, no history, `last_seen_at`); `requests` + `gym_changes`; `gym_source_refs`; `users.role`; bigint IDs.
 - Price verification: web price = verified; Google Maps menu photo posted < 1 year ago = verified; otherwise admin.
-- Unverified prices are stored too (`verified_by` empty, at most one verified + one unverified row per gym per kind) and shown below verified ones; an admin approving one makes it the verified row.
+- Unverified prices are stored too (`verified_by` empty, at most one verified + one unverified row per gym per kind) and shown below verified ones. They come from user edits or from the chatbot finding a price somewhere unverified (e.g. a review). Only an admin can verify them; approving one makes it the verified row.

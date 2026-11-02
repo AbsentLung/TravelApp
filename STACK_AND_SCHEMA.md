@@ -268,7 +268,7 @@ erDiagram
         int amount_minor
         char3 currency
         int usd_cents
-        text source_kind "gym_website | price_menu | user | chat"
+        text source_kind "gym_website | price_menu | user | review | chat"
         text source_url
         date menu_posted_on "Google Maps photo date"
         timestamptz last_seen_at
@@ -377,6 +377,8 @@ The sections below are the choices behind this diagram, each with variations.
 
 **Decided by Joey (2026-11-02): unverified prices are stored too**, so they can be shown at the bottom of the right sidebar's day-pass list (as the vibe-coded app does with its "Unverified" prices). So `gym_prices` holds **at most two current rows per gym per kind: one verified and one unverified** (unique on `(gym_id, kind, is_verified)`, where `is_verified` is generated from `verified_by IS NOT NULL`). Still no history: a newer price of the same kind and status replaces the old one.
 
+- **Where unverified prices come from (Joey, 2026-11-02):** user edits (`source_kind = user`), and the chatbot finding a price in an unverified place, such as a Google Maps review that mentions it (`source_kind = review`, or `chat` for other unverified places, with the URL kept in `source_url`).
+- **Only an admin can verify them.** The bot never promotes an unverified price; the automatic rule above applies only to prices found on the gym's website or a recent Google Maps menu photo.
 - An unverified price is stored **straight away** with `verified_by` empty, so users see it at once, clearly marked unverified.
 - It also gets a `gym_changes` row waiting for an admin. When the admin approves it, the price becomes the verified row (replacing any older verified one) and the unverified row is removed.
 - When a verified price is newer than the unverified one, the unverified row is removed, since it's out of date.

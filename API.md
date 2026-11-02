@@ -198,7 +198,7 @@ Handled by Better Auth, mounted at `/v1/auth/*`. We don't write these routes our
 }
 ```
 
-`description` is cut to about 300 characters to keep tiles small; the full text is in gym details. `dayPass` is the verified day-pass price when there is one, otherwise the stored unverified one (`verified: false`), which the price list shows at the bottom. Unverified prices are stored, not just pending in the review queue (STACK_AND_SCHEMA.md 2.6).
+`description` is cut to about 300 characters to keep tiles small; the full text is in gym details. `dayPass` is the verified day-pass price when there is one, otherwise the stored unverified one (`verified: false`), which the price list shows at the bottom. Unverified prices are stored, not just pending in the review queue. They come from user edits or from the chatbot finding a price somewhere unverified (e.g. a review), and only an admin can verify them (STACK_AND_SCHEMA.md 2.6).
 
 Headers: `Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=600`, `ETag`. An unknown or empty tile returns `200` with `"gyms": []` (and enqueues a fetch), not `404`, so the empty answer is cached too.
 
@@ -240,7 +240,7 @@ Gym details response:
     {
       "kind": "week_pass",
       "amountMinor": 600000, "currency": "IDR", "usdCents": 3800,
-      "sourceKind": "user", "sourceUrl": null,
+      "sourceKind": "review", "sourceUrl": "https://maps.google.com/...",
       "verifiedBy": null,
       "lastSeenAt": "2026-11-01T00:00:00Z"
     }
