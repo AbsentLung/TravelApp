@@ -69,7 +69,7 @@ flowchart LR
 
 ### 1.3 Database access and migrations
 
-The schema leans on PostGIS (points, `ST_Within`, `ST_GeoHash`), JSONB and full-text search, so the tool must handle those without fighting us.
+The schema leans on PostGIS (points, `ST_Within`, `ST_GeoHash`), JSONB and trigram similarity, so the tool must handle those without fighting us.
 
 | Variation | Pros | Cons |
 |---|---|---|
@@ -176,7 +176,7 @@ Today (vibe-coded demo, same code on `GymFinder` and `GymFinderVibeCoded`) the a
 | Keep Leaflet / WebView, switch base tiles to a provider (MapTiler, Stadia, Thunderforest) | No rewrite; just change the tile URL. | WebView map feels sluggish on mobile with many markers. Provider free tiers are small; per-view fees grow with users. |
 | react-native-maps (Apple/Google maps) + Leaflet/MapLibre on web | Native look on each platform. | Two different map libraries to maintain; Google Maps SDK has its own usage costs and terms. |
 
-**Recommendation: MapLibre + self-hosted Protomaps on S3/CloudFront.** As a quick first step before the rewrite, point Leaflet at the same Protomaps tiles (or a provider) so we stop using the OSM servers.
+**Recommendation: MapLibre + self-hosted Protomaps on S3/CloudFront.** **Decided by Joey (2026-11-02): the vibe-coded app's UI stays as it is**, including the right sidebar's collapsible sections (e.g. trial), filters and panels. Only the map underneath changes; pins, clusters and controls should look and behave as they do today. As a quick first step before the rewrite, point Leaflet at the same Protomaps tiles (or a provider) so we stop using the OSM servers.
 
 ### 1.8 Getting results back to the app (chat, request status)
 
@@ -254,12 +254,12 @@ erDiagram
         bigint id PK
         text name
         geometry location "Point, 4326"
-        text geohash5 "generated, indexed"
+        text geohash4 "generated, indexed: map loading tiles"
+        text geohash5 "generated, indexed: refresh/sweep cells"
         text_array categories
         bool accepts_drop_in
         bool has_trial
         jsonb details "hours, amenities, ..."
-        tsvector search "generated"
         text status "active | closed | hidden"
     }
     gym_prices {
@@ -269,11 +269,12 @@ erDiagram
         int amount_minor
         char3 currency
         int usd_cents
-        text source_kind "gym_website | price_menu | user | chat"
+        text source_kind "gym_website | price_menu | user | review | chat"
         text source_url
         date menu_posted_on "Google Maps photo date"
         timestamptz last_seen_at
-        text verified_by "bot | admin | null"
+        text verified_by "bot | admin | null = unverified"
+        bool is_verified "generated; unique (gym_id, kind, is_verified)"
     }
     gym_source_refs {
         bigint gym_id FK
@@ -283,9 +284,8 @@ erDiagram
     }
     requests {
         bigint id PK
-        bigint user_id FK "null if signed out"
-        text session_id "signed-out only"
-        text kind "add_gym | update_gym | sweep | chat"
+        bigint user_id FK
+        text kind "add_gym | update_gym | sweep"
         text status "pending | completed | failed"
         timestamptz deadline
         text failure_reason
@@ -294,7 +294,7 @@ erDiagram
     }
     gym_changes {
         bigint id PK
-        bigint request_id FK
+        bigint request_id FK "null for chat facts"
         bigint gym_id FK "null for a new gym"
         jsonb proposed
         jsonb evidence "source_kind, url, menu_posted_on"
@@ -338,7 +338,7 @@ The sections below are the choices behind this diagram, each with variations.
 | Speed for "load tile X" | Fast | Fastest (exact match) |
 | Matches cache keys | No | Yes |
 
-**Recommendation: `geometry(Point, 4326)` + GIST (R-tree), plus a stored `geohash5 = ST_GeoHash(location, 5)` column with a b-tree index.** Loading a tile becomes `WHERE geohash5 = $1`, which is about as cheap as a query gets, and it's the same key the CDN and Redis cache by.
+**Recommendation: `geometry(Point, 4326)` + GIST (R-tree), plus a stored `geohash5 = ST_GeoHash(location, 5)` column with a b-tree index.** Loading a map tile becomes `WHERE geohash4 = $1`, which is about as cheap as a query gets, and it's the same key the CDN and Redis cache by.
 
 ### 2.4 Tile size (geohash precision)
 
@@ -348,7 +348,7 @@ The sections below are the choices behind this diagram, each with variations.
 | **5** | **4.9 × 4.9 km** | A city-zoom screen (~zoom 12) needs ~6–12 cells; a busy cell has maybe 50–200 gyms, a few tens of KB. Small enough for one Overpass query or one sweep job. | More cells to request at low zoom, so we need a minimum zoom (already agreed). |
 | 6 | 1.2 × 0.6 km | Tiny responses. | Dozens of requests per screen; many more cache keys; sweeps split into many small jobs. |
 
-**Recommendation: precision 5, with the map loading gyms only at about zoom 11 and above.** Below that, show a "zoom in to see gyms" hint, or later a precomputed count per precision-3 cell.
+**Decided by Joey (2026-11-02): two sizes.** The map **loads and caches gyms by geohash4** (about 39 × 20 km), because at zoom 11 a phone screen covers roughly 30 × 65 km, which would be ~100 geohash5 tiles but only ~6 geohash4 tiles. **Overpass refreshes, sweeps and `tile_fetches` stay on geohash5**, so each external job stays small. `gyms` gets both as generated, indexed columns (`geohash4 = left(geohash5, 4)`). **Decided by Joey (2026-11-02): the map loads gyms, shows gym pins and shows filters only at zoom 11 and above** (`FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map screens). Below zoom 11 nothing is requested or cached and no pins or filters are shown, exactly like the vibe-coded app.
 
 ### 2.5 Tile refresh and sweep status
 
@@ -362,7 +362,7 @@ The sections below are the choices behind this diagram, each with variations.
 
 ### 2.6 Prices and the verification rule
 
-**Decided by Joey (2026-11-01): no price history.** Keep only the current price, plus **when it was last seen**. The approval rule needs to know **where** each price came from, and for price menus **when the photo was posted**.
+**Decided by Joey (2026-11-01): no price history.** Keep only the current price (verified and unverified, see below), plus **when it was last seen**. The approval rule needs to know **where** each price came from, and for price menus **when the photo was posted**.
 
 **Decided by Joey (2026-11-01): how prices are verified.**
 - **Price found on the web** (the gym's own website): verified, no date check needed.
@@ -374,7 +374,16 @@ The sections below are the choices behind this diagram, each with variations.
 | Price columns on `gyms` (today: `day_pass_price_cents`, ...) plus `unverified_gym_data` | Simple. | No source, URL or dates, so the rule can't be checked or audited. One currency. Adding source + date + last seen for 4 price kinds means ~20 columns on `gyms`. |
 | **`gym_prices` table with one row per gym per price kind** (unique `(gym_id, kind)`): amount, currency, `usd_cents`, `source_kind`, `source_url`, `menu_posted_on`, `last_seen_at`, `verified_by`. Overwritten when a newer price is approved. | Exactly "current price + when last seen + where from", no history. Handles any currency. Adding a new price kind (e.g. 10-visit pass) is a row, not a column. | Map filters join it (one indexed join; or copy `has_day_pass` / cheapest price onto `gyms` if tile queries get slow). |
 
-**Recommendation: `gym_prices`, one row per gym per kind, no history.** When the scraper sees the same price again, it only bumps `last_seen_at`. The old row's details stay in `gym_changes` (section 2.10) as the audit trail of what was approved, so we still know who changed what without a history table.
+**Recommendation: `gym_prices`, no history.** When the scraper sees the same price again, it only bumps `last_seen_at`. The old row's details stay in `gym_changes` (section 2.10) as the audit trail of what was approved, so we still know who changed what without a history table.
+
+**Decided by Joey (2026-11-02): unverified prices are stored too**, so they can be shown at the bottom of the right sidebar's day-pass list (as the vibe-coded app does with its "Unverified" prices). So `gym_prices` holds **at most two current rows per gym per kind: one verified and one unverified** (unique on `(gym_id, kind, is_verified)`, where `is_verified` is generated from `verified_by IS NOT NULL`). Still no history: a newer price of the same kind and status replaces the old one.
+
+- **Where unverified prices come from (Joey, 2026-11-02):** user edits (`source_kind = user`), and the chatbot finding a price in an unverified place, such as a Google Maps review that mentions it (`source_kind = review`, or `chat` for other unverified places, with the URL kept in `source_url`).
+- **Only an admin can verify them.** The bot never promotes an unverified price; the automatic rule above applies only to prices found on the gym's website or a recent Google Maps menu photo.
+- An unverified price is stored **straight away** with `verified_by` empty, so users see it at once, clearly marked unverified.
+- It also gets a `gym_changes` row waiting for an admin. When the admin approves it, the price becomes the verified row (replacing any older verified one) and the unverified row is removed.
+- When a verified price is newer than the unverified one, the unverified row is removed, since it's out of date.
+- The app shows the verified price when there is one, and the unverified one otherwise.
 
 ```mermaid
 flowchart TD
@@ -382,8 +391,10 @@ flowchart TD
     W -->|yes| A[Auto-approve<br/>verified_by = bot]
     W -->|no| M{source_kind = price_menu<br/>AND menu_posted_on on Google Maps<br/>within the last year?}
     M -->|yes| A
-    M -->|no| AD[awaiting_admin]
-    A --> U[Upsert gym_prices row,<br/>last_seen_at = now]
+    M -->|no| UV[Store as the unverified row<br/>shown at bottom of price list]
+    UV --> AD[gym_change awaiting_admin]
+    AD -->|admin approves| A
+    A --> U[Upsert the verified row,<br/>last_seen_at = now,<br/>remove older unverified row]
 ```
 
 ### 2.7 Flexible gym details
@@ -408,16 +419,13 @@ flowchart TD
 
 ### 2.9 Text search (FR-10)
 
-| Variation | Pros | Cons |
-|---|---|---|
-| **Postgres full-text (`tsvector` generated column, GIN) + `pg_trgm` for typos** (`pg_trgm` is already used) | No extra system; same query as the map filters. | Ranking is basic; multilingual stemming is limited (use the `simple` config). |
-| OpenSearch | Great search, fuzzy, many languages. | Another paid service to run and keep in sync; overkill for filtering gyms in one view. |
+**Decided by Joey (2026-11-02): filters stay exactly as in the vibe-coded app**, so text search runs in the app over the gyms already loaded (name, description, address, categories), not in the database. No full-text index is needed for the app. `pg_trgm` stays for name similarity when deduplicating gyms (2.11). If server-side search is ever needed (e.g. for admins), a generated `tsvector` column with a GIN index can be added then.
 
-**Recommendation: Postgres full-text + `pg_trgm`.**
+There is no price filter. The day-pass price list in the right sidebar sorts by `gym_prices.usd_cents`, verified prices first and unverified (`verified_by` empty) at the bottom.
 
 ### 2.10 Requests, changes and approvals (FR-16 to 18)
 
-"My requests" shows add-gym, update-gym, sweep and chat requests together, each `pending / completed / failed`, and approvals/rejections. One sweep can find many gyms, and one chat can propose a few facts.
+"My requests" shows add-gym, update-gym and sweep requests together, each `pending / completed / failed`, and approvals/rejections. One sweep can find many gyms. Chats are not stored (decided by Joey, 2026-11-02; see API.md 1.4), so they never create `requests` rows; a fact found by chat is proposed directly as a `gym_changes` row.
 
 **Variation A: one `requests` table does everything** (kind, status, payload, review result)
 
@@ -444,7 +452,7 @@ flowchart LR
 - ✅ `gym_changes` doubles as the audit log of every change to every gym.
 - ❌ "My requests" joins two tables (cheap).
 
-**Variation C: separate tables per kind** (`gym_submissions`, `sweep_requests`, `chat_requests`)
+**Variation C: separate tables per kind** (`gym_submissions`, `sweep_requests`)
 
 - ✅ Each table has exactly its own columns.
 - ❌ "My requests" becomes a UNION of several tables; status logic duplicated; the watchdog has to scan each.
@@ -465,7 +473,7 @@ stateDiagram-v2
     rejected --> [*]
 ```
 
-Signed-out chat requests have `user_id = null` and a `session_id`, and a scheduled job deletes them after a day or so.
+Chats never create `requests` rows: they are temporary and live only in the cache for a few minutes (API.md 1.4).
 
 ### 2.11 Deduplicating gyms across sources
 
@@ -501,7 +509,7 @@ Gyms without an external ID (user-submitted) are matched by distance + name simi
 
 ### 2.14 Migrating from today's demo schema
 
-The demo `db/schema.sql` is a hand-made dump. The plan is a fresh Drizzle schema plus a one-off script that copies demo gyms over: `lat/lng` → `location`, `osm_id` → `gym_source_refs`, price columns and `unverified_gym_data` → `gym_prices` rows (unverified, `last_seen_at` = the old `scraped_at`), `gym_categories` → `categories[]`, `admins` → `users.role`, `gym_submissions` → `requests` + `gym_changes`, `fetched_areas` / `scanned_areas` → `tile_fetches`. Demo reviews come along with `user_id` left empty.
+The demo `db/schema.sql` is a hand-made dump. The plan is a fresh Drizzle schema plus a one-off script that copies demo gyms over: `lat/lng` → `location`, `osm_id` → `gym_source_refs`, price columns on `gyms` → **verified** `gym_prices` rows (the vibe-coded app shows them as confirmed prices), `unverified_gym_data` → **unverified** `gym_prices` rows (`last_seen_at` = the old `scraped_at`), `gym_categories` → `categories[]`, `admins` → `users.role`, `gym_submissions` → `requests` + `gym_changes`, `fetched_areas` / `scanned_areas` → `tile_fetches`. Demo reviews come along with `user_id` left empty.
 
 ### 2.15 How different is this from the vibe-coded database?
 
@@ -530,7 +538,7 @@ Nothing in the vibe-coded data is lost: section 2.14's one-off script copies it 
 **Decided by Joey (2026-11-01):**
 - Accepted as recommended: backend (1.1), DB access (1.3), auth (1.4), demo hosting (1.5), Ollama on Joey's PC (1.5), scale hosting (1.6), results to the app (1.8), tile size and location (2.3, 2.4), requests + `gym_changes` (2.10), and the smaller schema items (2.7, 2.8, 2.9, 2.11, 2.12, 2.13).
 - **Scraper (1.9):** Playwright in sweep workers; never pay for proxies.
-- **Prices (2.6):** no price history; one current price per kind with `last_seen_at`.
+- **Prices (2.6):** no price history; one current price per kind with `last_seen_at`. Unverified prices are stored too (one verified + one unverified row per kind at most) and shown at the bottom of the price list (Joey, 2026-11-02).
 - **Price verification (2.6):** web prices are verified with no date check; a price menu counts if its photo was posted on Google Maps less than a year ago.
 
 - **Queue (1.2):** pg-boss in demo mode, BullMQ in scale mode (Joey asked about Kafka and RabbitMQ first; answer in 1.2).

@@ -24,7 +24,7 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - The app calls our backend, not Overpass directly.
 
 ### Caching and loading
-- Split the map into fixed geohash cells. Load the cells on screen as the user pans/zooms, and only above a minimum zoom.
+- Split the map into fixed geohash4 cells (~39 × 20 km) for loading and caching; Overpass refreshes and sweeps use geohash5 cells inside them. Load the cells on screen as the user pans/zooms, only at zoom 11 and above (same as `FILTERS_VISIBLE_AT_ZOOM = 11` in the vibe-coded map). Below zoom 11: no tile requests, nothing cached, no gym pins, no filters.
 - Refresh stale cells from Overpass (about weekly), using `last_fetched`.
 - Saved/submitted gyms are written to Postgres immediately (never only to cache).
 - Redis (ElastiCache) is the cache and BullMQ queue in scale mode; demo mode uses an in-memory cache and a pg-boss queue in Postgres. Access both only through small cache and queue interfaces.
@@ -32,6 +32,18 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 ### LLM
 - The app uses Ollama (local/open models) for now to save money.
 - Keep every LLM call behind one interface so it can switch to Claude once the app makes money. No provider-specific calls outside that module.
+- Chats are temporary: never store chat questions or answers in Postgres or logs. Answers live in the cache for ~15 minutes only. Facts found by chat may be proposed as gym changes for review.
+
+### UI
+- Keep the UI as it is in the vibe-coded app (`GymFinderVibeCoded` branch); Joey is happy with it (2026-11-02). The restructure changes data loading and the map library underneath, not how the app looks or behaves.
+- This includes the right sidebar and its collapsible sections (e.g. the trial section), the filter chips, the day-pass price list, the gym details panel and the add/edit gym flows. Reuse the existing components (`gym-panels.tsx` etc.) rather than redesigning them.
+- Reviews UI stays as in the vibe-coded app; the only addition is an "Edit" button next to the signed-in user's own review. One review per user per gym, edits overwrite it (no review history).
+- No "apply to be admin" flow; admins promote users.
+- Any visible change needs Joey's OK first.
+
+### Map filters
+- Keep the filters exactly as in the vibe-coded map (`GymFinderVibeCoded` branch): text search (name, description, address, categories), drop-ins only, trials only, category dropdown, all client-side on loaded tiles. No price filter.
+- Right sidebar day-pass list: cheapest first, unverified prices at the bottom.
 
 ### Hosting
 - AWS (decided by Joey 2026-10-31; replaces the earlier Netlify + GCP e2-micro idea).
@@ -39,8 +51,10 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - Keep config in env vars and keep AWS-specific code behind interfaces, so services can be swapped.
 
 ### Stack and schema (decided 2026-11-01/02, details in STACK_AND_SCHEMA.md)
-- TypeScript everywhere: Fastify API + workers, npm-workspaces monorepo, Zod schemas shared with the app. Drizzle ORM + migrations. Better Auth (users in our Postgres).
+- TypeScript everywhere: Fastify API + workers, npm-workspaces monorepo, Zod schemas shared with the app. Drizzle ORM + migrations. Better Auth (users in our Postgres): email, Google and Facebook at launch; add Sign in with Apple before the iOS App Store release (Apple requires it).
+- API contract: API.md (REST under `/v1`, Zod schemas, 202 + polling for slow work).
 - Map: MapLibre with self-hosted Protomaps tiles. Never use the public OSM tile servers in production.
 - Scraper: Playwright in sweep workers. Never pay for proxies or scraping APIs.
-- Schema: PostGIS point + GIST + `geohash5` tiles; `tile_fetches`; `gym_prices` (current price per kind, no history, `last_seen_at`); `requests` + `gym_changes`; `gym_source_refs`; `users.role`; bigint IDs.
+- Schema: PostGIS point + GIST + `geohash4` (loading) and `geohash5` (refresh/sweeps) columns; `tile_fetches`; `gym_prices` (current verified + unverified price per kind, no history, `last_seen_at`); `requests` + `gym_changes`; `gym_source_refs`; `users.role`; bigint IDs.
 - Price verification: web price = verified; Google Maps menu photo posted < 1 year ago = verified; otherwise admin.
+- Unverified prices are stored too (`verified_by` empty, at most one verified + one unverified row per gym per kind) and shown below verified ones. They come from user edits or from the chatbot finding a price somewhere unverified (e.g. a review). Only an admin can verify them; approving one makes it the verified row.
