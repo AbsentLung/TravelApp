@@ -34,6 +34,11 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - Keep every LLM call behind one interface so it can switch to Claude once the app makes money. No provider-specific calls outside that module.
 - Chats are temporary: never store chat questions or answers in Postgres or logs. Answers live in the cache for ~15 minutes only. Facts found by chat may be proposed as gym changes for review.
 
+### UI
+- Keep the UI as it is in the vibe-coded app (`GymFinderVibeCoded` branch); Joey is happy with it (2026-11-02). The restructure changes data loading and the map library underneath, not how the app looks or behaves.
+- This includes the right sidebar and its collapsible sections (e.g. the trial section), the filter chips, the day-pass price list, the gym details panel and the add/edit gym flows. Reuse the existing components (`gym-panels.tsx` etc.) rather than redesigning them.
+- Any visible change needs Joey's OK first.
+
 ### Map filters
 - Keep the filters exactly as in the vibe-coded map (`GymFinderVibeCoded` branch): text search (name, description, address, categories), drop-ins only, trials only, category dropdown, all client-side on loaded tiles. No price filter.
 - Right sidebar day-pass list: cheapest first, unverified prices at the bottom.

@@ -176,7 +176,7 @@ Today (vibe-coded demo, same code on `GymFinder` and `GymFinderVibeCoded`) the a
 | Keep Leaflet / WebView, switch base tiles to a provider (MapTiler, Stadia, Thunderforest) | No rewrite; just change the tile URL. | WebView map feels sluggish on mobile with many markers. Provider free tiers are small; per-view fees grow with users. |
 | react-native-maps (Apple/Google maps) + Leaflet/MapLibre on web | Native look on each platform. | Two different map libraries to maintain; Google Maps SDK has its own usage costs and terms. |
 
-**Recommendation: MapLibre + self-hosted Protomaps on S3/CloudFront.** As a quick first step before the rewrite, point Leaflet at the same Protomaps tiles (or a provider) so we stop using the OSM servers.
+**Recommendation: MapLibre + self-hosted Protomaps on S3/CloudFront.** **Decided by Joey (2026-11-02): the vibe-coded app's UI stays as it is**, including the right sidebar's collapsible sections (e.g. trial), filters and panels. Only the map underneath changes; pins, clusters and controls should look and behave as they do today. As a quick first step before the rewrite, point Leaflet at the same Protomaps tiles (or a provider) so we stop using the OSM servers.
 
 ### 1.8 Getting results back to the app (chat, request status)
 
