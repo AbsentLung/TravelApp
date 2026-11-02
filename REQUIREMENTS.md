@@ -21,7 +21,7 @@ Each requirement has an ID so later docs (`DESIGN.md`, PRs, tests) can point at 
 ### Gym details
 
 - **FR-7** A gym's details include, where known: name, location, costs (drop-in / day pass, trial, membership), description, category, and opening hours.
-- **FR-8** The details section includes an AI chatbot that looks up and answers questions about that specific gym's data (e.g. "is there a free trial?", "how much is a day pass?").
+- **FR-8** The details section includes an AI chatbot that looks up and answers questions about that specific gym's data (e.g. "is there a free trial?", "how much is a day pass?"). It may use our database, the gym's own website, its Google Maps page, and a web search. Anything it finds outside the gym's own website or a recent price menu is unverified (FR-24, FR-25).
 - **FR-9** Useful facts the chatbot finds can be saved to the gym's record so the next user sees them without asking again (subject to FR-17).
 
 ### Filtering and search
@@ -48,14 +48,20 @@ Each requirement has an ID so later docs (`DESIGN.md`, PRs, tests) can point at 
 ### Adding and updating gyms
 
 - **FR-16** Logged-in users can request that a gym be added to the map, or that an existing gym's details be updated.
-- **FR-17** Each request is reviewed first by a bot. If the bot can verify it (FR-24), it goes live without admin approval. Otherwise it waits for an admin to approve it.
+- **FR-17** Each request is reviewed first by a bot. If the bot can verify it (FR-24, FR-25), it goes live without admin approval. If it is obvious junk, the bot rejects it (FR-26). Otherwise it waits for an admin to approve it (FR-27).
 - **FR-18** Users can see the status of their requests (pending, approved, rejected).
-- **FR-24** A price change counts as bot-verified if the bot finds the new price on the gym's own website, or in a price menu that is less than a year old.
+- **FR-24** A price change counts as bot-verified if the bot finds the new price on the gym's own website (no date check), or in a price menu photo posted on Google Maps less than a year ago. Any other price (a user's edit, or one the chatbot found in a review or elsewhere on the web) is stored as **unverified**, shown at the bottom of the price list, and only an admin can verify it.
+- **FR-25** A non-price change counts as bot-verified when:
+  - **new gym** (from a user, a sweep or pre-seeding): the gym exists in OpenStreetMap, on Google Maps, or on its own website within about 50 m of the given location, with a matching name, and isn't already on the map;
+  - **name, address, opening hours, categories, drop-ins, trial**: the bot finds the new value on the gym's own website or its Google Maps listing.
+  A value found only in a review, a chat answer or elsewhere on the web is not verified. **Marking a gym closed or removing it always needs an admin.**
+- **FR-26** The bot may reject a request on its own, telling the user why, when it is spam or abusive, is missing a name or location, has an impossible location (e.g. in the sea), or exactly duplicates an existing gym (the user is pointed to the existing gym instead).
+- **FR-27** A non-price change waiting for an admin is not shown to other users until approved. (Unverified prices are the exception: they are shown, labelled unverified, per FR-24.)
 
 ### Pre-seeding gym data
 
 - **FR-19** A script populates all gyms in a given area (e.g. a city or a bounding box), so the map already has data there before any user visits.
-- **FR-20** Before release, the script is run on the most popular travel destinations, so launch users don't land on an empty map.
+- **FR-20** Before release, the script is run on about the top 100 backpacker destinations, from a fixed list we write, so launch users don't land on an empty map.
 - **FR-21** The script can be re-run on an area without creating duplicate gyms, so seeded data can be refreshed.
 
 ## Non-functional requirements
@@ -70,14 +76,14 @@ Each requirement has an ID so later docs (`DESIGN.md`, PRs, tests) can point at 
 - **OOS-1 Regional map sources:** the sweep bot uses the best map source for each region, e.g. Yandex Maps in post-Soviet countries and Baidu Maps in China, choosing automatically from the location being swept.
 - **OOS-2 Premium:** a paid premium version.
 
-## Open questions
+## Answered questions
 
-These are flags for the research step in phase 1, not changes to the requirements above.
+These were the open questions from phase 1. All are answered (Joey, 2026-10-31 to 2026-11-02); details are in [DESIGN_DISCUSSION.md](./DESIGN_DISCUSSION.md), [STACK_AND_SCHEMA.md](./STACK_AND_SCHEMA.md) and [API.md](./API.md).
 
-1. **Google Maps sweeps (FR-11) and its Terms of Service.** Google Maps' terms forbid scraping its data, and courts have sided with companies against scrapers before (see [Plan.md](./Plan.md)). This could get the app blocked or sued. Is there a licensed way to get the same result, or should sweeps be limited or dropped? OOS-1 raises the same question for Yandex and Baidu.
-2. **What is a "bot request" in NFR-2?** 10,000 daily users making, say, 20 requests each is about 2-3 requests per second on average, maybe 10-30 at peak. 1,000 per second is about 86 million a day, which is far more than 10k users would create. If it means chatbot messages, that rate of LLM calls would be very expensive, and well beyond a local model. If it means sweep requests to a map site, that rate would get blocked quickly. Which bot, and is 1,000/s a peak or a sustained rate?
-3. **"Every gym in the world" (FR-4).** Coverage can only be as good as the data sources plus user submissions. Is it acceptable that some regions start sparse?
-4. **Bot approval (FR-17).** Price changes are covered by FR-24. What counts as bot-verified for other changes (a new gym, opening hours, category), and what may the bot reject on its own (spam, duplicates, missing fields)? How does the bot tell a price menu's date?
-5. **Chatbot sources (FR-8).** Where is the chatbot allowed to look up gym data (our database only, the gym's own website, the open web)? This affects cost, accuracy, and legal exposure.
-6. **Filter scope (FR-10).** Read here as "filter what's in the current map view". Should search also find gyms outside the view?
-7. **Which destinations to pre-seed (FR-20)?** Who picks the list, and how many cities? A fixed list we write ourselves is simplest; a ranking from published tourism data is more defensible. Pre-seeding should stick to sources we're allowed to store (see question 1).
+1. **Google Maps sweeps (FR-11) and its Terms of Service.** Decided: sweeps scrape Google Maps; Joey accepts the ToS risk. The scraper sits behind a pluggable source interface so it can be swapped. Never pay for proxies.
+2. **What is a "bot request" in NFR-2?** Decided: 1,000/s is the intake rate. Requests go into separate queues (slow for sweeps, faster for per-gym jobs) that drain at controlled rates, with duplicate requests merged.
+3. **"Every gym in the world" (FR-4).** Decided: coverage grows with use (Overpass refreshes, sweeps, submissions, pre-seeding); some regions may start sparse.
+4. **Bot approval (FR-17).** Decided: FR-24 (prices), FR-25 (other changes), FR-26 (bot rejections), FR-27 (pending changes hidden). The menu's date is the date the photo was posted on Google Maps.
+5. **Chatbot sources (FR-8).** Decided: our database, the gym's website, its Google Maps page and web search. Only the gym's website and recent menu photos verify a price; everything else is unverified. Chats themselves are temporary and never stored.
+6. **Filter scope (FR-10).** Decided: filters and text search apply to the gyms loaded in the current map view, exactly as in the vibe-coded app; no search outside the view.
+7. **Which destinations to pre-seed (FR-20)?** Decided: a fixed list we write of about the top 100 backpacker destinations.

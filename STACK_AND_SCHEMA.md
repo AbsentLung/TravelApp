@@ -229,7 +229,7 @@ Decided in PR #6: sweeps scrape Google Maps, behind the pluggable source interfa
 - Sweeps and Overpass refresh per tile, deduped against known gyms (FR-11, 12).
 - Users, admins (FR-13, 14).
 - Requests with `pending / completed / failed`, deadline, retry, and review outcome `approved / rejected` (FR-16, 17, 18, and the PR #6 decision on failed jobs).
-- **Approval rule (Joey, 2026-10-31):** a gym can skip admin approval if a bot verifies it; a price change is verified if it's found on the gym's website or on a price menu less than one year old. Everything unverified goes to an admin. So every fact needs its **source** and **date**.
+- **Approval rule (Joey, 2026-10-31, completed 2026-11-02):** a change skips admin approval if a bot verifies it (REQUIREMENTS.md FR-24 to FR-27). A price is verified if it's found on the gym's website or on a Google Maps menu photo posted less than one year ago; a new gym or other detail is verified if found on OpenStreetMap, Google Maps or the gym's website; closing or removing a gym always needs an admin. Everything unverified goes to an admin. So every fact needs its **source** and **date**.
 
 ### 2.2 Proposed schema (overview)
 

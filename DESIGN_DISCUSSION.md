@@ -610,8 +610,12 @@ flowchart LR
 
 | Change | Counts as bot-verified when |
 |---|---|
-| **Price change** (drop-in, trial, membership) | The price is found on **the gym's own website**, or the bot finds a **price menu less than a year old** (e.g. a dated photo or listing). |
-| New gym / other details | The bot can confirm it from a source (rules to be detailed in the API/schema docs). |
+| **Price change** (drop-in, trial, membership) | The price is found on **the gym's own website**, or in a **price menu photo posted on Google Maps less than a year ago**. Anything else is stored as unverified and only an admin can verify it (REQUIREMENTS.md FR-24). |
+| **New gym** | It exists in OpenStreetMap, on Google Maps or on its own website within about 50 m of the pin, with a matching name, and isn't already on the map (decided by Joey, 2026-11-02; FR-25). |
+| **Name, address, hours, categories, drop-ins, trial** | The new value is on the gym's own website or its Google Maps listing. Values found only in reviews, chat answers or elsewhere on the web are unverified (FR-25). |
+| **Marking a gym closed / removing it** | Never: always an admin (FR-25). |
+
+The bot may reject on its own (spam, missing name or location, impossible location, exact duplicate) and tells the user why (FR-26). Non-price changes waiting for an admin stay hidden until approved; unverified prices are shown, labelled (FR-27).
 
 Every auto-approved change keeps its **evidence** (source URL, date found, what was matched) on the record, so admins can audit it later and undo a bad one.
 
@@ -651,6 +655,6 @@ Settled in PR review:
 - **Database:** PostgreSQL + PostGIS (section 5.1).
 - **Failed bot jobs:** may fail or be lost; every request is tracked in Postgres with a deadline, and the user is told in-app: signed-in users see pending / completed / failed on one "My requests" page alongside their gym add/update requests; signed-out users see it only in-session (section 5.3).
 
-- **Bot verification skips admin approval** (for seeds, sweeps and user requests alike). Price changes count as verified when found on the gym's own website or on a price menu less than a year old; unverified changes go to admin review. Evidence is kept for audit.
+- **Bot verification skips admin approval** (for seeds, sweeps and user requests alike). Price changes count as verified when found on the gym's own website or on a Google Maps menu photo posted less than a year ago; other changes per REQUIREMENTS.md FR-25 to FR-27; unverified changes go to admin review. Evidence is kept for audit.
 
 Nothing open. Next docs: stack choices, then schema, then API.
