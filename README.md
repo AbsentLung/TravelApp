@@ -24,13 +24,15 @@ Each phase finishes before the next one starts, unless noted. Check items off as
 
 Expo (SDK, Expo Router, TypeScript) is already in the repo, so treat it as a constraint going in.
 
-- [ ] High-level design: ask Claude for several options with pros and cons, debate until we land on the best one
-- [ ] Choose everything Expo doesn't cover, driven by the high-level design: where the backend runs (e.g. Expo API routes or a separate server), database, cache, hosting, the map and gym data source, and the chatbot's LLM
-- [ ] Database schema: ask Claude for several variations, debate until we land on the best one
+- [x] High-level design: ask Claude for several options with pros and cons, debate until we land on the best one
+- [x] Choose everything Expo doesn't cover, driven by the high-level design: where the backend runs (e.g. Expo API routes or a separate server), database, cache, hosting, the map and gym data source, and the chatbot's LLM
+- [x] Database schema: ask Claude for several variations, debate until we land on the best one
 - [ ] API design: compare variations and their trade-offs, then approve a final design
 - [ ] Clean up into a presentable `DESIGN.md` for others to read
 - [ ] Update `CLAUDE.md` (drafted in [PR #1](https://github.com/AbsentLung/TravelApp/pull/1)) so Claude stays on track and builds things the way we planned
   - [ ] Include an absolute rule: Claude must **never** commit secrets (API keys, tokens, passwords, `.env` files) to the repo
+
+> The high-level design (Option B) is in [DESIGN_DISCUSSION.md](https://github.com/AbsentLung/GymFinder/blob/GymFinder/DESIGN_DISCUSSION.md), and the stack and schema are in [STACK_AND_SCHEMA.md](https://github.com/AbsentLung/GymFinder/blob/GymFinder/STACK_AND_SCHEMA.md) (both on the GymFinder branch).
 
 ## 3. Environment
 
