@@ -69,7 +69,7 @@ flowchart LR
 
 ### 1.3 Database access and migrations
 
-The schema leans on PostGIS (points, `ST_Within`, `ST_GeoHash`), JSONB and full-text search, so the tool must handle those without fighting us.
+The schema leans on PostGIS (points, `ST_Within`, `ST_GeoHash`), JSONB and trigram similarity, so the tool must handle those without fighting us.
 
 | Variation | Pros | Cons |
 |---|---|---|
@@ -259,7 +259,6 @@ erDiagram
         bool accepts_drop_in
         bool has_trial
         jsonb details "hours, amenities, ..."
-        tsvector search "generated"
         text status "active | closed | hidden"
     }
     gym_prices {
@@ -407,12 +406,9 @@ flowchart TD
 
 ### 2.9 Text search (FR-10)
 
-| Variation | Pros | Cons |
-|---|---|---|
-| **Postgres full-text (`tsvector` generated column, GIN) + `pg_trgm` for typos** (`pg_trgm` is already used) | No extra system; same query as the map filters. | Ranking is basic; multilingual stemming is limited (use the `simple` config). |
-| OpenSearch | Great search, fuzzy, many languages. | Another paid service to run and keep in sync; overkill for filtering gyms in one view. |
+**Decided by Joey (2026-11-02): filters stay exactly as in the vibe-coded app**, so text search runs in the app over the gyms already loaded (name, description, address, categories), not in the database. No full-text index is needed for the app. `pg_trgm` stays for name similarity when deduplicating gyms (2.11). If server-side search is ever needed (e.g. for admins), a generated `tsvector` column with a GIN index can be added then.
 
-**Recommendation: Postgres full-text + `pg_trgm`.**
+There is no price filter. The day-pass price list in the right sidebar sorts by `gym_prices.usd_cents`, verified prices first and unverified (`verified_by` empty) at the bottom.
 
 ### 2.10 Requests, changes and approvals (FR-16 to 18)
 

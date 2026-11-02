@@ -104,12 +104,18 @@ Keeping caches fresh after an admin approves a change:
 
 **Recommendation: short cache times plus a per-tile invalidation on approval.** The tile response also carries an `ETag`, so a browser or the app can revalidate with `If-None-Match` and get a tiny `304` when nothing changed.
 
-Where filters run (FR-10):
+Filters and the price list (FR-10). **Decided by Joey (2026-11-02): keep them exactly as in the vibe-coded app** (`gym-map-screen.web.tsx` / `gym-map-screen.tsx` on `GymFinderVibeCoded`). Everything runs **in the app, on tiles already loaded**, so tiles stay cacheable (one URL per tile, not one per filter combination) and filtering is instant:
 
-| Filter | Where | Why |
-|---|---|---|
-| Drop-in allowed, trial, category, max price | **In the app, on tiles already loaded** | The tile carries these fields; filtering locally is instant and keeps tiles cacheable (one URL per tile, not one per filter combination). |
-| Text search over gym details | **Server: `GET /v1/gyms/search`** within the visible area | Descriptions and details aren't in the tile (they'd make tiles big); Postgres full-text search handles it. Not cached (rare, varied queries). |
+| Control | Behaviour (as in the vibe-coded app) |
+|---|---|
+| Text search box | Matches the typed text against name, description, address and categories (`gymMatchesSearch`), filtering the pins on the map. No server search. |
+| Drop-ins only | Shows only gyms that accept drop-ins. |
+| Trials only | Shows only gyms with a trial. |
+| Category dropdown | The fixed category list (`GYM_CATEGORIES`) plus "Unknown" for gyms with no category; empty selection = all categories. |
+| **No price filter** | Prices are not a filter. |
+| Day-pass price list (right sidebar) | Opens when "Drop-ins only" is on and no gym is selected. Lists the gyms in view that have a day-pass price, **cheapest first**, then a divider and the **unverified** day-pass prices, also cheapest first, at the bottom. |
+
+So the tile carries every field these need: name, description, address, categories, drop-in, trial, and the day-pass price with whether it's verified.
 
 Stale tiles: if a tile has never been fetched from Overpass, or the fetch is older than about a week, the API still answers right away with what it has, sets `"stale": true`, and enqueues a refresh. The app can re-request the tile after ~30 s when `stale` is true. Because CDN hits never reach the API, the refresh only triggers on cache misses, which is enough at a 10-minute cache time.
 
@@ -180,15 +186,19 @@ Handled by Better Auth, mounted at `/v1/auth/*`. We don't write these routes our
       "name": "Bali Strength Club",
       "lat": -8.6501,
       "lng": 115.1385,
-      "categories": ["commercial"],
+      "address": "Jl. Raya Canggu 12",
+      "description": "Free weights, rig and sauna.",
+      "categories": ["Traditional"],
       "acceptsDropIn": true,
       "hasTrial": true,
-      "dayPass": { "amountMinor": 150000, "currency": "IDR", "usdCents": 950 },
+      "dayPass": { "amountMinor": 150000, "currency": "IDR", "usdCents": 950, "verified": true },
       "rating": 4.6
     }
   ]
 }
 ```
+
+`description` is cut to about 300 characters to keep tiles small; the full text is in gym details. `dayPass.verified` is false for unverified prices, which the price list shows at the bottom.
 
 Headers: `Cache-Control: public, max-age=60, s-maxage=600, stale-while-revalidate=600`, `ETag`. An unknown or empty tile returns `200` with `"gyms": []` (and enqueues a fetch), not `404`, so the empty answer is cached too.
 
@@ -201,7 +211,6 @@ The app works out which geohash5 cells cover the screen and requests them in par
 | Method | Path | Who | Notes |
 |---|---|---|---|
 | GET | `/v1/gyms/{id}` | 🌐 | Full details (below). `Cache-Control: public, s-maxage=300`, invalidated on approval like tiles. |
-| GET | `/v1/gyms/search?q=&bbox=minLng,minLat,maxLng,maxLat&limit=` | 🌐 | Text search inside the visible area (FR-10). Returns the same compact gym shape as tiles. `bbox` is required and capped in size so it can't search the whole world. |
 | GET | `/v1/gyms/{id}/reviews?cursor=` | 🌐 | Paginated. |
 | POST | `/v1/gyms/{id}/reviews` | 🔒 | `{ rating, body }`. One review per user per gym (409 on a second; update with PUT). |
 | PUT | `/v1/gyms/{id}/reviews/mine` | 🔒 | Edit own review. |
@@ -340,7 +349,7 @@ Recommendations in bold.
 2. **Slow work:** **202 + request ID + polling now, SSE for chat later**? (1.3)
 3. ~~Signed-out users~~ **Decided (Joey, 2026-11-02): chats are temporary and not stored** (1.4, 2.4b). This also removes the need for a device ID.
 4. **Cache freshness:** **Decided (Joey, 2026-11-02): tiles are only fetched and cached at zoom 11 and above, and gyms and filters only show from zoom 11, exactly like the vibe-coded app.** The 10-minute CDN cache with a per-tile refresh on approval stays as recommended unless you say otherwise. (1.5)
-5. **Filters:** **drop-in / trial / category / price in the app on loaded tiles; text search on the server**? (1.5)
+5. **Filters:** **Decided (Joey, 2026-11-02): exactly as in the vibe-coded app**: text search, drop-ins, trials and categories, all in the app on loaded tiles; no price filter; the right sidebar lists day-pass prices cheapest first with unverified ones at the bottom. No server search endpoint. (1.5)
 6. **Endpoints:** **one per action with a shared request shape**, rather than one generic `POST /requests`? (2.4)
 7. **Social login:** **Google + Apple** at launch, or email only first? (2.1)
 8. **Admins:** drop the demo's "apply to be admin" flow; admins promote users, and the first admin is set from the command line? (2.6)

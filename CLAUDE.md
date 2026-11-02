@@ -34,6 +34,10 @@ These were agreed with Joey. Follow them unless he changes them; update this fil
 - Keep every LLM call behind one interface so it can switch to Claude once the app makes money. No provider-specific calls outside that module.
 - Chats are temporary: never store chat questions or answers in Postgres or logs. Answers live in the cache for ~15 minutes only. Facts found by chat may be proposed as gym changes for review.
 
+### Map filters
+- Keep the filters exactly as in the vibe-coded map (`GymFinderVibeCoded` branch): text search (name, description, address, categories), drop-ins only, trials only, category dropdown, all client-side on loaded tiles. No price filter.
+- Right sidebar day-pass list: cheapest first, unverified prices at the bottom.
+
 ### Hosting
 - AWS (decided by Joey 2026-10-31; replaces the earlier Netlify + GCP e2-micro idea).
 - Demo mode stays near-free on a single small instance; scale mode moves to managed AWS services. Demo: Lightsail + Docker Compose, S3 + CloudFront + Route 53. Scale: ECS Fargate, RDS Postgres, ElastiCache, AWS CDK. See STACK_AND_SCHEMA.md.
